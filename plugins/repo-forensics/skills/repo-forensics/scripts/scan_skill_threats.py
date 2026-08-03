@@ -610,12 +610,19 @@ def scan_content(content, rel_path, budget=None):
     code_exts = {'.py', '.js', '.ts', '.jsx', '.tsx', '.rb', '.sh', '.bash', '.zsh',
                  '.go', '.rs', '.php', '.java', '.swift', '.kt'}
 
-    # AI agent instruction files: treat like SKILL.MD for prompt injection + exfiltration + persistence
-    _AGENT_INSTRUCTION_FILES = {'SKILL.MD', 'README.MD', 'CLAUDE.MD', '.CURSORRULES', '.WINDSURFRULES'}
+    # AI agent instruction files: treat like SKILL.MD for prompt injection + exfiltration + persistence.
+    # Use core's canonical set so the scanner and the evidence-class layer agree
+    # on which files are agent instructions (a divergent local set previously
+    # made AGENTS.md / routine.md / heartbeat.md / soul.md / instructions.md
+    # invisible to categories 4/5/6/7 even though core classified them as
+    # agent-instruction and would have tagged any emitted finding `direct`).
     basename_upper = os.path.basename(rel_path).upper()
     # Also match .github/copilot-instructions.md by path
     is_copilot_instructions = rel_path.replace('\\', '/').endswith('.github/copilot-instructions.md')
-    is_agent_instruction_file = basename_upper in _AGENT_INSTRUCTION_FILES or is_copilot_instructions
+    is_agent_instruction_file = (
+        basename_upper in core._AGENT_INSTRUCTION_BASENAMES
+        or is_copilot_instructions
+    )
 
     if ext in text_exts or ext in code_exts or is_agent_instruction_file:
         # Cat 1: Prompt injection (most relevant in .md, .txt, .yml)
@@ -782,6 +789,21 @@ def _scan_prose_imperatives(content, rel_path):
     findings = []
     in_code_fence = False
     lines = content.split('\n')
+    # In agent-instruction or agent-config files, a real exfil directive to
+    # ANY external URL stays direct/critical. The safe-domain skip only applies
+    # to non-agent files (where a github.com URL in prose is likely benign
+    # documentation, not an agent command).
+    basename_upper = os.path.basename(rel_path).upper()
+    is_copilot_instructions = rel_path.replace('\\', '/').endswith('.github/copilot-instructions.md')
+    is_agent_file = (
+        basename_upper in core._AGENT_INSTRUCTION_BASENAMES
+        or is_copilot_instructions
+    )
+    agent_config_exts = {'.toml', '.yml', '.yaml', '.json', '.ini', '.cfg'}
+    if not is_agent_file:
+        ext = os.path.splitext(rel_path)[1].lower()
+        if ext in agent_config_exts:
+            is_agent_file = True
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith('```'):
@@ -809,7 +831,7 @@ def _scan_prose_imperatives(content, rel_path):
                 snippet=line.strip()[:120],
                 category="prose-imperative"
             ))
-        elif not is_safe_domain and PROSE_IMPERATIVE_VERB_URL.search(line):
+        elif (not is_safe_domain or is_agent_file) and PROSE_IMPERATIVE_VERB_URL.search(line):
             findings.append(core.Finding(
                 scanner=SCANNER_NAME, severity="medium",
                 title="Prose Imperative: Action directive with URL",

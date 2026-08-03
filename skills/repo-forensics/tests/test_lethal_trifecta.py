@@ -133,8 +133,9 @@ class TestLethalTrifectaDoesNotFire:
     def test_three_primitives_different_files(self):
         """Cross-file splitting: exec in file A, network in B, credential in C.
 
-        Rule 19 is currently per-file, so this should NOT fire. (Module-level
-        correlation is listed in the security review as a harder P1 upgrade.)
+        The cross-file Lethal Trifecta pass fires when all three primitives are
+        present repo-wide but no single file contains all three. This catches
+        split attacks where one file imports another.
         """
         findings = [
             _make("sast", "os.system( call", "os.system code execution",
@@ -146,7 +147,11 @@ class TestLethalTrifectaDoesNotFire:
                   filepath="c.py"),
         ]
         correlated = core.correlate(findings)
-        assert not any(c.category == "lethal-trifecta" for c in correlated)
+        trifecta = [c for c in correlated if c.category == "lethal-trifecta"]
+        assert len(trifecta) == 1, (
+            f"cross-file trifecta should fire once; got {len(trifecta)}"
+        )
+        assert "Cross-File" in trifecta[0].title
 
 
 class TestLethalTrifectaFalsePositiveDefenses:
@@ -351,7 +356,12 @@ class TestTrifectaRawScannerFalsePositiveDefenses:
 
     def test_ci_build_script_with_webhook_comment_not_flagged(self, tmp_path):
         """A CI script using subprocess + env var load + a comment mentioning
-        'webhook' must NOT fire trifecta_raw."""
+        'webhook' must NOT fire trifecta_raw for network or credential
+        primitives from the comment prose. The exec primitive
+        (subprocess.run) is a real code call on a real code line, so it is
+        correctly emitted; the false-positive concern is comment-level
+        prose keywords (webhook, api_key, browser data) matching network
+        or credential primitives."""
         script = tmp_path / "ci.py"
         script.write_text(
             "# CI build script that handles webhook callbacks\n"
@@ -362,10 +372,18 @@ class TestTrifectaRawScannerFalsePositiveDefenses:
             "# This comment mentions webhook and browser data for doc purposes\n"
         )
         findings = core.detect_trifecta_raw(str(tmp_path))
-        # Would previously emit 3 findings due to webhook/api_key/browser data
-        # matching bare keywords in comments. Now: zero.
-        assert len(findings) == 0, (
-            f"CI script false-positived on trifecta_raw: {[f.title for f in findings]}"
+        # The exec primitive (subprocess.run) is a real code call, so it is
+        # correctly emitted. The comment-level prose keywords (webhook,
+        # api_key, browser data) must NOT produce network or credential
+        # primitives.
+        cats = {f.category for f in findings}
+        assert "exfiltration" not in cats, (
+            f"comment prose 'webhook' must not fire network primitive: "
+            f"{[f.title for f in findings]}"
+        )
+        assert "credential-read" not in cats, (
+            f"comment prose 'api_key'/'browser data' must not fire "
+            f"credential primitive: {[f.title for f in findings]}"
         )
 
     def test_api_key_in_variable_name_not_flagged(self, tmp_path):

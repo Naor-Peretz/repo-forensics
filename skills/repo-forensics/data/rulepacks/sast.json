@@ -568,7 +568,7 @@
     {
       "id": "SA-PY-024",
       "type": "regex",
-      "pattern": "base64\\.b64decode\\s*\\(",
+      "pattern": "(?:base64\\.|__import__\\(\\s*['\"]base64['\"]\\s*\\)\\s*\\.)b64decode\\s*\\(",
       "extensions": [
         ".py"
       ],
@@ -584,11 +584,176 @@
         "match": [
           "base64.b64decode(payload)",
           "exec(base64.b64decode('...'))",
-          "data = base64.b64decode (encoded)"
+          "data = base64.b64decode (encoded)",
+          "exec(__import__('base64').b64decode('aW1wb3J0IG9z'))",
+          "__import__('base64').b64decode (encoded)"
         ],
         "no_match": [
           "b64decode",
           "# base64 decode"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-025",
+      "type": "regex",
+      "pattern": "base64\\.b32decode\\s*\\(",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Base32 Decode (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "Base32 decode call in a .py file. Benign in many contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file.",
+      "examples": {
+        "match": [
+          "base64.b32decode(payload)",
+          "exec(base64.b32decode('...'))",
+          "data = base64.b32decode (encoded)"
+        ],
+        "no_match": [
+          "b32decode",
+          "# base32 decode"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-026",
+      "type": "regex",
+      "pattern": "base64\\.b85decode\\s*\\(",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Base85 Decode (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "Base85 decode call in a .py file. Benign in many contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file.",
+      "examples": {
+        "match": [
+          "base64.b85decode(payload)",
+          "exec(base64.b85decode('...'))",
+          "data = base64.b85decode (encoded)"
+        ],
+        "no_match": [
+          "b85decode",
+          "# base85 decode"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-027",
+      "type": "regex",
+      "pattern": "(?:bytes|bytearray)\\.fromhex\\s*\\(|binascii\\.unhexlify\\s*\\(|codecs\\.decode\\s*\\([^)]*['\"]hex['\"]",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Hex Decode (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "Hex decode call in a .py file. Benign in many contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file.",
+      "examples": {
+        "match": [
+          "bytes.fromhex(payload)",
+          "binascii.unhexlify(encoded)",
+          "codecs.decode(data, 'hex')"
+        ],
+        "no_match": [
+          "fromhex",
+          "# hex decode"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-028",
+      "type": "regex",
+      "pattern": "codecs\\.decode\\s*\\(.*['\"]rot_?13['\"]",
+      "extensions": [
+        ".py"
+      ],
+      "title": "ROT13 Decode (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "ROT13 decode call in a .py file. Benign in many contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file.",
+      "examples": {
+        "match": [
+          "codecs.decode(payload, 'rot_13')",
+          "codecs.decode(data, 'rot13')",
+          "exec(codecs.decode('vzcbeg bf', 'rot_13'))",
+          "exec(codecs.decode('vzcbeg bf;bf.flfgrz(\"phey\")', 'rot_13'))"
+        ],
+        "no_match": [
+          "rot13",
+          "# rot13 decode"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-029",
+      "type": "regex",
+      "pattern": "marshal\\.loads\\s*\\(",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Marshal Loads (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "marshal.loads call in a .py file. Benign in some serialization contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file, because marshal can carry arbitrary code objects.",
+      "examples": {
+        "match": [
+          "marshal.loads(payload)",
+          "exec(marshal.loads(encoded))",
+          "data = marshal.loads (blob)"
+        ],
+        "no_match": [
+          "loads",
+          "# marshal decode"
+        ]
+      }
+    },
+    {
+      "id": "SA-PY-030",
+      "type": "regex",
+      "pattern": "pickle\\.loads\\s*\\(",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Pickle Loads (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "pickle.loads call in a .py file. Benign in some serialization contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file, because pickle can carry arbitrary code objects.",
+      "examples": {
+        "match": [
+          "pickle.loads(payload)",
+          "exec(pickle.loads(encoded))",
+          "data = pickle.loads (blob)"
+        ],
+        "no_match": [
+          "loads",
+          "# pickle decode"
         ]
       }
     },

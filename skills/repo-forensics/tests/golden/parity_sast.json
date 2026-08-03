@@ -42,6 +42,27 @@
     "credential-validation"
   ],
   [
+    "Base32 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-025.py",
+    1,
+    "encoding"
+  ],
+  [
+    "Base32 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-025.py",
+    2,
+    "encoding"
+  ],
+  [
+    "Base32 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-025.py",
+    3,
+    "encoding"
+  ],
+  [
     "Base64 Decode (Obfuscation Signal)",
     "medium",
     "SA-PY-024.py",
@@ -65,8 +86,43 @@
   [
     "Base64 Decode (Obfuscation Signal)",
     "medium",
+    "SA-PY-024.py",
+    4,
+    "encoding"
+  ],
+  [
+    "Base64 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-024.py",
+    5,
+    "encoding"
+  ],
+  [
+    "Base64 Decode (Obfuscation Signal)",
+    "medium",
     "obfuscation.py",
     2,
+    "encoding"
+  ],
+  [
+    "Base85 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-026.py",
+    1,
+    "encoding"
+  ],
+  [
+    "Base85 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-026.py",
+    2,
+    "encoding"
+  ],
+  [
+    "Base85 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-026.py",
+    3,
     "encoding"
   ],
   [
@@ -527,6 +583,55 @@
   [
     "Dangerous Exec",
     "high",
+    "SA-PY-024.py",
+    4,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
+    "SA-PY-025.py",
+    2,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
+    "SA-PY-026.py",
+    2,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
+    "SA-PY-028.py",
+    3,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
+    "SA-PY-028.py",
+    4,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
+    "SA-PY-029.py",
+    2,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
+    "SA-PY-030.py",
+    2,
+    "code-execution"
+  ],
+  [
+    "Dangerous Exec",
+    "high",
     "obfuscation.py",
     2,
     "code-execution"
@@ -884,6 +989,20 @@
   [
     "Dynamic Import",
     "high",
+    "SA-PY-024.py",
+    4,
+    "code-execution"
+  ],
+  [
+    "Dynamic Import",
+    "high",
+    "SA-PY-024.py",
+    5,
+    "code-execution"
+  ],
+  [
+    "Dynamic Import",
+    "high",
     "obfuscation.py",
     3,
     "code-execution"
@@ -1155,6 +1274,27 @@
     "hardcoded"
   ],
   [
+    "Hex Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-027.py",
+    1,
+    "encoding"
+  ],
+  [
+    "Hex Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-027.py",
+    2,
+    "encoding"
+  ],
+  [
+    "Hex Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-027.py",
+    3,
+    "encoding"
+  ],
+  [
     "Implied Eval (setTimeout)",
     "medium",
     "SA-JS-006.js",
@@ -1258,6 +1398,27 @@
     "SA-PY-018.py",
     3,
     "kernel-exploit"
+  ],
+  [
+    "Marshal Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-029.py",
+    1,
+    "encoding"
+  ],
+  [
+    "Marshal Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-029.py",
+    2,
+    "encoding"
+  ],
+  [
+    "Marshal Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-029.py",
+    3,
+    "encoding"
   ],
   [
     "Mass Encrypted String Obfuscation (beautify)",
@@ -1615,6 +1776,34 @@
     "SA-TS-008.ts",
     3,
     "path-traversal"
+  ],
+  [
+    "Pickle Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-005.py",
+    1,
+    "encoding"
+  ],
+  [
+    "Pickle Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-030.py",
+    1,
+    "encoding"
+  ],
+  [
+    "Pickle Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-030.py",
+    2,
+    "encoding"
+  ],
+  [
+    "Pickle Loads (Obfuscation Signal)",
+    "medium",
+    "SA-PY-030.py",
+    3,
+    "encoding"
   ],
   [
     "Pipe Exfiltration: env to network",
@@ -2000,6 +2189,34 @@
     "SA-PY-015.py",
     3,
     "worm-propagation"
+  ],
+  [
+    "ROT13 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-028.py",
+    1,
+    "encoding"
+  ],
+  [
+    "ROT13 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-028.py",
+    2,
+    "encoding"
+  ],
+  [
+    "ROT13 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-028.py",
+    3,
+    "encoding"
+  ],
+  [
+    "ROT13 Decode (Obfuscation Signal)",
+    "medium",
+    "SA-PY-028.py",
+    4,
+    "encoding"
   ],
   [
     "Redirect to /dev/tcp",
@@ -2768,6 +2985,27 @@
     "Unsafe Deserialization",
     "critical",
     "SA-PY-005.py",
+    3,
+    "deserialization"
+  ],
+  [
+    "Unsafe Deserialization",
+    "critical",
+    "SA-PY-030.py",
+    1,
+    "deserialization"
+  ],
+  [
+    "Unsafe Deserialization",
+    "critical",
+    "SA-PY-030.py",
+    2,
+    "deserialization"
+  ],
+  [
+    "Unsafe Deserialization",
+    "critical",
+    "SA-PY-030.py",
     3,
     "deserialization"
   ],

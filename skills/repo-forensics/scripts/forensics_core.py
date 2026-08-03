@@ -505,22 +505,15 @@ _CAPABILITY_CATEGORY_MAP = {
     },
 }
 
-# rule_id prefixes (lowercased) that map to each capability. A finding whose
-# rule_id starts with one of these prefixes matches the capability.
-_CAPABILITY_RULE_PREFIX_MAP = {
-    "writes-config": {"sa-config-", "sa-file-write-"},
-    "reads-home": {"sa-path-", "sa-home-"},
-    "spawns-subprocess": {"sa-exec-", "sa-shell-", "sa-cmd-", "sa-subprocess-"},
-    "network-egress": {"sa-net-", "sa-exfil-", "sa-dataflow-", "df-"},
-    "dynamic-import": {"sa-deser-", "sa-reflection-", "sa-import-"},
-}
-
-# Categories that are NEVER downgradable by a capability declaration.
+# Categories that are NEVER annotated by a capability declaration.
 # This is a comprehensive blocklist of high-signal malicious-behavior
-# categories. A capability declaration can only downgrade findings whose
+# categories. A capability declaration can only annotate findings whose
 # categories are NOT in this set. The principle: a self-declared capability
-# can soften a BLOCK finding only for genuinely benign-intent categories,
-# never for categories that represent confirmed malicious behavior patterns.
+# can associate itself only with genuinely benign-intent categories, never
+# with categories that represent confirmed malicious behavior patterns.
+# (The ledger is report-only: annotation never changes severity or exit
+# code; this guard only stops a declaration from being attached to a
+# confirmed-malicious finding.)
 _NON_DOWNGRADABLE_CATEGORIES = {
     # Directive-class findings (agent-directed attacks)
     "prompt-injection",
@@ -570,7 +563,7 @@ _NON_DOWNGRADABLE_CATEGORIES = {
     "provenance-forging",
 }
 
-# Scanner names that are NEVER downgradable by a capability declaration.
+# Scanner names that are NEVER annotated by a capability declaration.
 # All directive scanners AND all primary evidence scanners are included.
 # Only explicitly benign-intent scanners (none currently) would be eligible.
 _NON_DOWNGRADABLE_SCANNERS = {
@@ -584,10 +577,10 @@ _NON_DOWNGRADABLE_SCANNERS = {
 def _capability_matches_finding(capability, finding):
     """Return True if a finding's category matches a declared capability name.
 
-    A rule_id-prefix match alone is NOT sufficient: the finding's category
-    must also be in the capability's category set. This prevents a secrets
-    finding whose rule_id happens to start with a capability prefix from
-    being downgraded without a category-level guard.
+    Matching is by category only. A rule_id prefix is never consulted, so a
+    finding whose rule_id happens to start with a capability prefix cannot
+    be matched without a category-level guard. (The ledger is report-only:
+    a match only adds an annotation; it never changes severity or exit code.)
     """
     cats = _CAPABILITY_CATEGORY_MAP.get(capability, set())
     fcat = (finding.get("category") or "").lower()
@@ -597,8 +590,10 @@ def _capability_matches_finding(capability, finding):
 
 
 def _is_non_downgradable(finding):
-    """Return True if a finding can never be downgraded by a capability
-    declaration (directive-class, known-IOC, or CVE/KEV)."""
+    """Return True if a finding can never be annotated by a capability
+    declaration (directive-class, known-IOC, CVE/KEV, or any high-signal
+    malicious-behavior category / primary scanner). The ledger is report-only,
+    so this guard only controls annotation, never severity or exit code."""
     fcat = (finding.get("category") or "").lower()
     if fcat in _NON_DOWNGRADABLE_CATEGORIES:
         return True
@@ -941,7 +936,10 @@ def walk_aux(repo_path, ignore_patterns=None, skip_dirs=None, *,
 # legitimate code comments, variable names, and doc strings and caused
 # false-positive Rule 19 hits on every CI/integration test repo.
 _TRIFECTA_EXEC_RE = re.compile(
-    r'(?:os\.system\s*\(|subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(|'
+    r'(?:os\.system\s*\(|os\.popen\s*\(|os\.execv(?:e)?\s*\(|'
+    r'subprocess\.(?:run|call|Popen|check_output|check_call|getoutput)\s*\(|'
+    r'pty\.spawn\s*\(|runpy\.run_?(?:path|module)\s*\(|'
+    r'importlib\.import_module\s*\(|commands\.getoutput\s*\(|'
     r'child_process\.(?:exec|spawn|execSync)\s*\(|(?<![a-zA-Z_])eval\s*\(|'
     r'(?<![a-zA-Z_])exec\s*\(|shell\s*=\s*True)'
 )
@@ -950,10 +948,13 @@ _TRIFECTA_NETWORK_RE = re.compile(
     # Removed bare `webhook`, `reverse[\s_-]?shell`, and `node-fetch` which
     # were prose-level keywords that matched comments and docstrings.
     r'(?:http\.client\.HTTPS?Connection|urllib\.request\.urlopen|'
-    r'requests\.(?:post|get|put|delete)\s*\(|socket\.(?:connect|send|sendto)\s*\(|'
+    r'urllib3\.(?:PoolManager|connectionpool)|'
+    r'requests\.(?:post|get|put|delete|request|Session)\s*(?:\s*\(|\.\w+\s*\(|\(\)\.)|'
+    r'socket\.(?:connect|send|sendto|create_connection)\s*\(|'
+    r'socket\.socket\s*\(\s*\)\s*\.\s*connect|'
     r'axios\.(?:post|get|put|delete)\s*\(|'
     r'\bfetch\s*\(\s*[\'"]https?://|'
-    r'httpx\.(?:post|get|put|delete|Client)\s*\(|'
+    r'httpx\.(?:post|get|put|delete|Client|stream)\s*\(|'
     r'aiohttp\.ClientSession|'
     r'/dev/tcp/)'
 )
@@ -965,8 +966,10 @@ _TRIFECTA_CREDENTIAL_RE = re.compile(
     # `.aws/credentials_fake_helper` do not match.
     r'(?:\.ssh/id_(?:rsa|ed25519|dsa|ecdsa)\b|'
     r'\.aws/credentials\b|\.aws/config\b|'
-    r'\.netrc\b|/etc/shadow\b|'
+    r'\.netrc\b|/etc/shadow\b|/etc/passwd\b|'
     r'\b(?:GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)\b|'
+    r'\bkeyring\.get_password\s*\(|'
+    r'\bos\.popen\s*\(\s*[\'"]printenv|'
     r'\.env(?!\.example|\.template)(?:\s|\)|\'|"|$))'
 )
 
@@ -1046,10 +1049,15 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
             if exec_hit and network_hit and credential_hit:
                 break  # early exit: we have enough for Rule 19 to fire
 
-        # Only emit synthetic primitive findings when ALL THREE are present in
-        # the file. This tightens the feed into Rule 19's correlation loop —
-        # we never claim a file has only 1-2 primitives via this path.
-        if exec_hit and network_hit and credential_hit:
+        # Emit one synthetic finding per primitive present in the file. The
+        # per-file Rule 19 still only fires when all three land in the SAME
+        # file (correlate groups by file), so emitting partial primitives does
+        # not create false per-file trifecta hits. Emitting partials is
+        # required so the cross-file Lethal Trifecta pass can aggregate
+        # primitives spread across different files (a split attack where
+        # exec+credential live in file A and the network call lives in file B
+        # that A imports).
+        if exec_hit:
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Code execution primitive",
@@ -1058,6 +1066,7 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
                 snippet=exec_hit[1],
                 category="code-execution",
             ))
+        if network_hit:
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Outbound network primitive",
@@ -1066,6 +1075,7 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
                 snippet=network_hit[1],
                 category="exfiltration",
             ))
+        if credential_hit:
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Credential read primitive",
@@ -1393,6 +1403,59 @@ def correlate(findings):
     llmo_keywords = {"llmo-suspicious", "llmo suspicious"}
     brand_new_keywords = {"freshness-brand-new-package", "brand new package", "single version"}
 
+    # Trifecta primitive keyword sets (shared by per-file Rule 19 and the
+    # cross-file Lethal Trifecta pass). Defined at correlate scope so both
+    # passes use the same vocabulary.
+    trifecta_exec_keywords = {
+        "code execution", "code-execution", "arbitrary code",
+        "remote code", "shell execution", "shell-exec",
+        "shell injection", "shell-injection",
+        "eval(", "exec(", "os.system(", "os.system ",
+        "os.popen(", "os.execv(", "os.execve(",
+        "subprocess.run", "subprocess.call", "subprocess.popen",
+        "subprocess.check_output", "subprocess.exec",
+        "subprocess.getoutput",
+        "pty.spawn", "runpy.run_path", "runpy.run_module",
+        "importlib.import_module", "commands.getoutput",
+        "child_process.exec", "child_process.spawn",
+        "child_process.execsync", "command injection",
+        "shell=true", "dangerous exec",
+    }
+    trifecta_network_keywords = {
+        "exfiltration", "exfiltrate", "data theft",
+        "outbound network", "outbound-network", "outbound http",
+        "outbound-http", "webhook post", "webhook-post", "webhook exfil",
+        "reverse shell", "reverse-shell", "/dev/tcp/",
+        "requests.post(", "requests.get(", "requests.request(",
+        "requests.session(", "urllib.request.urlopen(",
+        "urllib3.poolmanager", "urllib3.connectionpool",
+        "socket.connect(", "socket.send(", "socket.sendto(",
+        "socket.create_connection(",
+        "http.client.httpsconnection", "http.client.httpconnection",
+        "node-fetch(", "axios.post(", "axios.get(",
+        "httpx.post(", "httpx.get(", "httpx.client(", "httpx.stream(",
+        "aiohttp.clientsession",
+        "command and control", "c2 callback", "data posted to external",
+        "posts to webhook",
+        "flows to sink", "tainted data reaches sink",
+    }
+    trifecta_credential_keywords = {
+        "credential read", "credential-read", "credential file",
+        "credential access", "credential theft", "credential exfil",
+        "secret read", "secret-read", "secret exfil",
+        "env access", "env-access", ".env read", ".env access",
+        "env_key read",
+        ".ssh/id_", ".aws/credentials", ".aws/config",
+        ".netrc", "id_rsa", "id_ed25519",
+        "/etc/passwd", "/etc/shadow",
+        "keychain access", "keychain read",
+        "keyring.get_password",
+        "github_token", "api_key read", "api-key read",
+        "browser data", "private key read", "token theft",
+        "os.environ.get", "os.environ[", "os.getenv(",
+        "os.popen( printenv", "os.popen('printenv",
+    }
+
     def has_category(file_findings, keywords, exclude_scanner=None):
         for f in file_findings:
             if exclude_scanner and f.scanner == exclude_scanner:
@@ -1710,45 +1773,6 @@ def correlate(findings):
         #     in its description should not trip the rule on its own — real
         #     Lethal Trifecta malware has each primitive flagged by the
         #     appropriate specialized scanner (sast/dataflow/secrets).
-        trifecta_exec_keywords = {
-            "code execution", "code-execution", "arbitrary code",
-            "remote code", "shell execution", "shell-exec",
-            "eval(", "exec(", "os.system(", "os.system ",
-            "subprocess.run", "subprocess.call", "subprocess.popen",
-            "subprocess.check_output", "subprocess.exec",
-            "child_process.exec", "child_process.spawn",
-            "child_process.execsync", "command injection",
-            "shell=true", "dangerous exec",
-        }
-        trifecta_network_keywords = {
-            "exfiltration", "exfiltrate", "data theft",
-            "outbound network", "outbound-network", "outbound http",
-            "outbound-http", "webhook post", "webhook-post", "webhook exfil",
-            "reverse shell", "reverse-shell", "/dev/tcp/",
-            "requests.post(", "urllib.request.urlopen(",
-            "socket.connect(", "socket.send(", "socket.sendto(",
-            "http.client.httpsconnection", "http.client.httpconnection",
-            "node-fetch(", "axios.post(", "axios.get(",
-            "httpx.post(", "httpx.get(", "httpx.client(",
-            "aiohttp.clientsession",
-            "command and control", "c2 callback", "data posted to external",
-            "posts to webhook",
-            "flows to sink", "tainted data reaches sink",
-        }
-        trifecta_credential_keywords = {
-            "credential read", "credential-read", "credential file",
-            "credential access", "credential theft", "credential exfil",
-            "secret read", "secret-read", "secret exfil",
-            "env access", "env-access", ".env read", ".env access",
-            "env_key read",
-            ".ssh/id_", ".aws/credentials", ".aws/config",
-            ".netrc", "id_rsa", "id_ed25519",
-            "keychain access", "keychain read",
-            "github_token", "api_key read", "api-key read",
-            "browser data", "private key read", "token theft",
-            "os.environ.get", "os.environ[",
-        }
-
         def _primitive_finding_ids(keywords):
             """Return set of distinct finding-indices that matched the keywords.
 
@@ -2152,6 +2176,65 @@ def correlate(findings):
             line=0,
             snippet="[compound: update channel + sub-agent spawn across repo]",
             category="deferred-sub-agent-chain"
+        ))
+
+    # Cross-file Lethal Trifecta: exec + network + credential read primitives
+    # spread across DIFFERENT files in the same repo. The per-file Rule 19 only
+    # fires when all three land in one file; a split attack (exec+credential in
+    # file A, network in file B that A imports) evades it entirely. This pass
+    # aggregates the same trifecta_*_keywords across every file and fires when
+    # all three primitives are present repo-wide but no single file already
+    # produced a Lethal Trifecta finding (avoiding duplicate reports when the
+    # per-file rule already caught the same-file case).
+    per_file_trifecta_files = {
+        c.file for c in correlated
+        if c.category == "lethal-trifecta" and c.file
+    }
+    all_file_findings = [f for f in findings if f.file and f.file not in _SYNTHETIC_FILE_TOKENS]
+
+    def _repo_has_primitive(keywords):
+        for f in all_file_findings:
+            tags = f._tags
+            for kw in keywords:
+                if kw in tags:
+                    return True
+        return False
+
+    has_exec_repo = _repo_has_primitive(trifecta_exec_keywords)
+    has_network_repo = _repo_has_primitive(trifecta_network_keywords)
+    has_credential_repo = _repo_has_primitive(trifecta_credential_keywords)
+    if (has_exec_repo and has_network_repo and has_credential_repo
+            and not per_file_trifecta_files):
+        # Collect the contributing files so the report names where each
+        # primitive lives (triage value the per-file rule gets for free).
+        exec_files = sorted({f.file for f in all_file_findings
+                              if any(kw in f._tags for kw in trifecta_exec_keywords)})
+        net_files = sorted({f.file for f in all_file_findings
+                            if any(kw in f._tags for kw in trifecta_network_keywords)})
+        cred_files = sorted({f.file for f in all_file_findings
+                             if any(kw in f._tags for kw in trifecta_credential_keywords)})
+        contributing = sorted(set(exec_files) | set(net_files) | set(cred_files))
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Cross-File Lethal Trifecta (exec + network + credential read across files)",
+            description=(
+                "Repo contains all three primitives of the 'Lethal Trifecta' "
+                "(Snyk terminology) spread across multiple files: code "
+                "execution, outbound network capability, and credential/secret "
+                "file access. No single file contains all three, so the per-file "
+                "Rule 19 does not fire, but the primitives combine at runtime "
+                "when one file imports another. This split pattern is a known "
+                "evasion of same-file trifecta detection."
+            ),
+            file="",
+            line=0,
+            snippet=(
+                "[compound: exec + outbound network + credential read "
+                f"across {', '.join(contributing[:5])}"
+                f"{'...' if len(contributing) > 5 else ''}]"
+            ),
+            category="lethal-trifecta"
         ))
 
     # Evidence model (Track A): set each compound's evidence_class from its

@@ -72,6 +72,41 @@ def _is_doc_placeholder(snippet, full_line=""):
         return True
     return False
 
+
+def _emit_line_findings(findings, rule, line, line_no, rel_path):
+    """Emit one finding per non-placeholder match of `rule` on `line`.
+
+    Iterates EVERY match (finditer, not just the leftmost search) so a
+    canonical placeholder earlier on a line cannot suppress a real key later
+    on the same line, and two real keys on one line are both reported. Each
+    individual match that is exactly a placeholder is skipped; the remaining
+    matches are still examined. (Previously a single rule.regex.search per
+    line returned only the first match, so a placeholder first match silently
+    dropped every later real key on that line.)
+    """
+    for match in rule.regex.finditer(line):
+        snippet = match.group(0)
+        if _is_doc_placeholder(snippet, full_line=line):
+            continue
+        if len(snippet) > 80:
+            snippet = snippet[:77] + "..."
+        findings.append(core.Finding(
+            scanner=SCANNER_NAME,
+            severity=rule.severity,
+            title=rule.title,
+            description="Potential hardcoded secret detected",
+            file=rel_path,
+            line=line_no,
+            snippet=snippet,
+            category="secret",
+            rule_id=rule.id,
+            confidence=rule.confidence,
+            attacker=rule.attacker,
+            boundary=rule.boundary,
+            asset=rule.asset,
+        ))
+
+
 # Detection rules load from the shipped pack at import time (rule_loader
 # memoizes, so this parses once per process). load_pack returns None only when
 # the pack file is missing or schema-incompatible -> a corrupted/tampered
@@ -137,29 +172,7 @@ def scan_file(file_path, rel_path):
                 continue
 
             for rule in _RULES:
-                match = rule.regex.search(line)
-                if match:
-                    snippet = match.group(0)
-                    if _is_doc_placeholder(snippet, full_line=line):
-                        continue
-                    if len(snippet) > 80:
-                        snippet = snippet[:77] + "..."
-
-                    findings.append(core.Finding(
-                        scanner=SCANNER_NAME,
-                        severity=rule.severity,
-                        title=rule.title,
-                        description="Potential hardcoded secret detected",
-                        file=rel_path,
-                        line=i + 1,
-                        snippet=snippet,
-                        category="secret",
-                        rule_id=rule.id,
-                        confidence=rule.confidence,
-                        attacker=rule.attacker,
-                        boundary=rule.boundary,
-                        asset=rule.asset,
-                    ))
+                _emit_line_findings(findings, rule, line, i + 1, rel_path)
     except (OSError, UnicodeDecodeError) as e:
         print(f"[!] Skipped {rel_path}: {e}", file=sys.stderr)
     return findings
@@ -194,28 +207,7 @@ def scan_text(text, rel_path):
         if len(line) > core.MAX_LINE_LENGTH:
             continue
         for rule in _RULES:
-            match = rule.regex.search(line)
-            if match:
-                snippet = match.group(0)
-                if _is_doc_placeholder(snippet, full_line=line):
-                    continue
-                if len(snippet) > 80:
-                    snippet = snippet[:77] + "..."
-                findings.append(core.Finding(
-                    scanner=SCANNER_NAME,
-                    severity=rule.severity,
-                    title=rule.title,
-                    description="Potential hardcoded secret detected",
-                    file=rel_path,
-                    line=i + 1,
-                    snippet=snippet,
-                    category="secret",
-                    rule_id=rule.id,
-                    confidence=rule.confidence,
-                    attacker=rule.attacker,
-                    boundary=rule.boundary,
-                    asset=rule.asset,
-                ))
+            _emit_line_findings(findings, rule, line, i + 1, rel_path)
     return findings
 
 
