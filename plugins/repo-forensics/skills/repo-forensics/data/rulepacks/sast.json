@@ -566,6 +566,33 @@
       }
     },
     {
+      "id": "SA-PY-024",
+      "type": "regex",
+      "pattern": "base64\\.b64decode\\s*\\(",
+      "extensions": [
+        ".py"
+      ],
+      "title": "Base64 Decode (Obfuscation Signal)",
+      "severity": "medium",
+      "confidence": 0.6,
+      "category": "encoding",
+      "attacker": "malicious payload author",
+      "boundary": "code/data boundary",
+      "asset": "server runtime",
+      "explanation": "Base64 decode call in a .py file. Benign in many contexts but feeds the Obfuscated Code Execution correlation rule when combined with an exec/eval finding in the same file.",
+      "examples": {
+        "match": [
+          "base64.b64decode(payload)",
+          "exec(base64.b64decode('...'))",
+          "data = base64.b64decode (encoded)"
+        ],
+        "no_match": [
+          "b64decode",
+          "# base64 decode"
+        ]
+      }
+    },
+    {
       "id": "SA-JS-001",
       "type": "regex",
       "pattern": "\\beval\\s*\\(",

@@ -67,10 +67,25 @@ DIRECTIVE_CATEGORIES = {
     "memory-heist-exfil",    # memory-heist
 }
 
-# Scanners whose output can include agent-directed directives. Kept for
-# reference; the central inference now uses only DIRECTIVE_CATEGORIES to
-# decide which findings bypass the documentation/comment/string checks.
+# Scanners whose output can include agent-directed directives. Findings from
+# these scanners bypass the documentation/comment/string demotion when the
+# carrier file is an agent-instruction file (SKILL.md, CLAUDE.md, etc.), so
+# imperative categories that live outside the four named ones (update-channel,
+# sub-agent-spawn, prose-imperative, credential-path-directive, stealth,
+# scope-escalation, authority-framing) stay direct. A malicious update-channel
+# directive in a SKILL.md must NOT be demoted to LOW.
 DIRECTIVE_SCANNERS = {"skill_threats", "agent_skills", "mcp_security"}
+
+# Agent-instruction file basenames (uppercase, matched case-insensitively).
+# These are agent-executed instruction files, not human documentation. A
+# directive here is executable by the agent, so it must stay evidence_class=
+# direct and keep full severity. Mirrors the _AGENT_INSTRUCTION_FILES set in
+# scan_skill_threats.py.
+_AGENT_INSTRUCTION_BASENAMES = {
+    "SKILL.MD", "CLAUDE.MD", "AGENTS.MD", ".CURSORRULES", ".WINDSURFRULES",
+    "ROUTINE.MD", "HEARTBEAT.MD", "SOUL.MD", "INSTRUCTIONS.MD",
+}
+_COPILOT_INSTRUCTIONS_SUFFIX = ".github/copilot-instructions.md"
 
 # Scanners that detect repo STRUCTURE / metadata anomalies rather than direct
 # malicious content (manifest drift, integrity drift, provenance gaps, dead
@@ -147,6 +162,24 @@ def _is_doc_file(file_path):
     return False
 
 
+def _is_agent_instruction_file(file_path):
+    """Return True if the file path is an agent-instruction file.
+
+    These are agent-executed instruction files (SKILL.md, CLAUDE.md,
+    AGENTS.md, routine.md, etc.), not human documentation. A directive
+    here is executable by the agent and must stay evidence_class=direct.
+    """
+    if not file_path:
+        return False
+    basename_upper = os.path.basename(file_path).upper()
+    if basename_upper in _AGENT_INSTRUCTION_BASENAMES:
+        return True
+    normalized = file_path.replace("\\", "/").lower()
+    if normalized.endswith(_COPILOT_INSTRUCTIONS_SUFFIX):
+        return True
+    return False
+
+
 def _is_comment_or_string(snippet):
     """Return True if the snippet is a comment, a quoted string literal, or
     a log/print/warn/echo message rather than an executable statement."""
@@ -169,10 +202,15 @@ def infer_evidence_class(scanner, category, file_path, snippet):
 
     Precedence (first match wins):
       1. directive category  -> direct   (the four named directive detectors)
-      2. structural scanner   -> structural
-      3. documentation file   -> inferred (prose, not executable code)
-      4. comment / quoted string / log message -> inferred
-      5. otherwise            -> direct   (real executable code evidence)
+      2. directive scanner in an agent-instruction file -> direct
+         (imperative categories like update-channel, sub-agent-spawn,
+         credential-path-directive, stealth, scope-escalation, authority-
+         framing, prose-imperative are agent-executable directives when
+         they live in SKILL.md/CLAUDE.md/AGENTS.md/routine.md, not prose)
+      3. structural scanner   -> structural
+      4. documentation file   -> inferred (prose, not executable code)
+      5. comment / quoted string / log message -> inferred
+      6. otherwise            -> direct   (real executable code evidence)
 
     A scanner that wants to override this can simply pass evidence_class=
     explicitly at construction; __post_init__ only infers when it is empty.
@@ -180,11 +218,22 @@ def infer_evidence_class(scanner, category, file_path, snippet):
     cat = (category or "").lower()
     if cat in DIRECTIVE_CATEGORIES:
         return "direct"
+    if (scanner or "") in DIRECTIVE_SCANNERS and _is_agent_instruction_file(file_path):
+        return "direct"
     if (scanner or "") in STRUCTURAL_SCANNERS:
         return "structural"
     if _is_doc_file(file_path):
+        # A directive scanner finding in a documentation file that is NOT an
+        # agent-instruction file is prose (a description of behavior), so it
+        # stays inferred. A non-directive scanner finding in documentation is
+        # also prose.
         return "inferred"
     if _is_comment_or_string(snippet):
+        # A directive scanner finding hidden in a code comment or string is
+        # still an agent-readable directive (agents ingest file contents
+        # including comments). Only non-directive scanners are demoted here.
+        if (scanner or "") in DIRECTIVE_SCANNERS:
+            return "direct"
         return "inferred"
     return "direct"
 
@@ -466,37 +515,84 @@ _CAPABILITY_RULE_PREFIX_MAP = {
     "dynamic-import": {"sa-deser-", "sa-reflection-", "sa-import-"},
 }
 
-# Categories that are NEVER downgradable by a capability declaration, even
-# when the category name appears in the capability map. These represent
-# findings that are always BLOCK-tier regardless of declared intent.
+# Categories that are NEVER downgradable by a capability declaration.
+# This is a comprehensive blocklist of high-signal malicious-behavior
+# categories. A capability declaration can only downgrade findings whose
+# categories are NOT in this set. The principle: a self-declared capability
+# can soften a BLOCK finding only for genuinely benign-intent categories,
+# never for categories that represent confirmed malicious behavior patterns.
 _NON_DOWNGRADABLE_CATEGORIES = {
+    # Directive-class findings (agent-directed attacks)
     "prompt-injection",
     "mcp-tool-injection",
     "memory-heist-exfil",
+    # Threat intelligence matches (never downgradable)
     "known-ioc",
     "cve",
     "cve-kev",
+    # High-signal malicious behavior categories
+    "exfiltration",
+    "git-exfiltration",
+    "credential-exfiltration",
+    "shell-injection",
+    "code-execution",
+    "command-execution",
+    "subprocess-exec",
+    "process-spawn",
+    "process-enumeration",
+    "obfuscation",
+    "deserialization",
+    "reflection-rce",
+    "path-traversal",
+    "credential-theft",
+    "credential-validation",
+    "secret-exposure",
+    "hardcoded",
+    "secret",
+    "secret-storage",
+    "file-write",
+    "config-modification",
+    "settings-modification",
+    "kernel-exploit",
+    "worm-propagation",
+    "runner-backdoor",
+    "destructive-command",
+    "injection",
+    "xss",
+    "css-steganography",
+    "scanner-integrity",
+    "lethal-trifecta",
+    "compound-attack",
+    "credential-read",
+    "memory-forensics",
+    "memory-safety",
+    "model-confusion",
+    "provenance-forging",
 }
 
-# Scanner names that emit directive-class findings. A finding from one of
-# these scanners is never downgraded by a capability declaration.
+# Scanner names that are NEVER downgradable by a capability declaration.
+# All directive scanners AND all primary evidence scanners are included.
+# Only explicitly benign-intent scanners (none currently) would be eligible.
 _NON_DOWNGRADABLE_SCANNERS = {
     "skill_threats", "agent_skills", "mcp_security",
+    "correlation", "sast", "secrets", "dataflow",
+    "trifecta_raw", "registry_hijack", "dependencies",
+    "manifest_drift", "integrity", "provenance", "dead_anchors", "oversize",
 }
 
 
 def _capability_matches_finding(capability, finding):
-    """Return True if a finding's category or rule_id matches a declared
-    capability name."""
+    """Return True if a finding's category matches a declared capability name.
+
+    A rule_id-prefix match alone is NOT sufficient: the finding's category
+    must also be in the capability's category set. This prevents a secrets
+    finding whose rule_id happens to start with a capability prefix from
+    being downgraded without a category-level guard.
+    """
     cats = _CAPABILITY_CATEGORY_MAP.get(capability, set())
-    prefixes = _CAPABILITY_RULE_PREFIX_MAP.get(capability, set())
     fcat = (finding.get("category") or "").lower()
     if fcat in cats:
         return True
-    rule_id = (finding.get("rule_id") or "").lower()
-    for prefix in prefixes:
-        if rule_id.startswith(prefix):
-            return True
     return False
 
 
@@ -857,6 +953,8 @@ _TRIFECTA_NETWORK_RE = re.compile(
     r'requests\.(?:post|get|put|delete)\s*\(|socket\.(?:connect|send|sendto)\s*\(|'
     r'axios\.(?:post|get|put|delete)\s*\(|'
     r'\bfetch\s*\(\s*[\'"]https?://|'
+    r'httpx\.(?:post|get|put|delete|Client)\s*\(|'
+    r'aiohttp\.ClientSession|'
     r'/dev/tcp/)'
 )
 _TRIFECTA_CREDENTIAL_RE = re.compile(
@@ -963,7 +1061,7 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Outbound network primitive",
-                description="Raw-content match for outbound network primitive (http.client, requests.post, urllib, socket, axios)",
+                description="Raw-content match for outbound network primitive (http.client, requests.post, urllib, socket, axios, httpx, aiohttp)",
                 file=rel_path, line=network_hit[0],
                 snippet=network_hit[1],
                 category="exfiltration",
@@ -1357,7 +1455,7 @@ def correlate(findings):
         # finding does not self-correlate.
         enc_find = first_match(file_findings, encoding_keywords)
         exec_find = first_match(file_findings, exec_keywords,
-                                exclude_categories={"encoding", "obfuscation"})
+                                exclude_categories={"encoding", "obfuscation", "decoded-payload"})
         if enc_find is not None and exec_find is not None and exec_find is not enc_find:
             correlated.append(Finding(
                 scanner="correlation",
@@ -1631,8 +1729,11 @@ def correlate(findings):
             "socket.connect(", "socket.send(", "socket.sendto(",
             "http.client.httpsconnection", "http.client.httpconnection",
             "node-fetch(", "axios.post(", "axios.get(",
+            "httpx.post(", "httpx.get(", "httpx.client(",
+            "aiohttp.clientsession",
             "command and control", "c2 callback", "data posted to external",
             "posts to webhook",
+            "flows to sink", "tainted data reaches sink",
         }
         trifecta_credential_keywords = {
             "credential read", "credential-read", "credential file",
@@ -1645,6 +1746,7 @@ def correlate(findings):
             "keychain access", "keychain read",
             "github_token", "api_key read", "api-key read",
             "browser data", "private key read", "token theft",
+            "os.environ.get", "os.environ[",
         }
 
         def _primitive_finding_ids(keywords):

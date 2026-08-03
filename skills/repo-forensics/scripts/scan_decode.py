@@ -139,7 +139,7 @@ MIN_BLOB_LEN = 16
 # it is worth handing to decode (mirrors the old entropy/skill_threats floor of
 # 50). splitstream intentionally uses a LOWER fragment floor (its fragments are
 # small by design) and builds its own regexes via build_blob_res(MIN_FRAGMENT_LEN).
-DETECT_BLOB_FLOOR = 50
+DETECT_BLOB_FLOOR = 32
 
 # Source-string delimiters stripped from the EDGES of a captured blob so a
 # wrapping quote does not break strict a85/base32/base64 validation. SINGLE

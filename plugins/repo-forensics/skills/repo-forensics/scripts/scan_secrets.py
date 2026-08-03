@@ -37,37 +37,40 @@ ENV_FILE_SAFE = {'.env.example', '.env.template', '.env.sample'}
 # Well-known example values that have no credential value. The scanner does
 # NOT flag them as real secrets. Suppression is at the scanner layer (not the
 # regex) so the rulepack examples still accurately document what the regex
-# matches.
+# matches. All checks are EXACT full-string matches on the regex-captured
+# snippet, never substring searches, so a real credential in a URI whose host
+# contains "example.com" (e.g. db.example.com) is NOT suppressed.
 _DOC_PLACEHOLDER_EXACT = frozenset({
     "AKIAIOSFODNN7EXAMPLE",  # canonical example AWS key ID
     "ghp_0123456789abcdefghijklmnopqrstuvwxyz",  # canonical example GitHub PAT
 })
 
-# Canonical example JWT header+payload. The signature varies across copies but
-# the header.payload is always this exact base64 string.
-_JWT_IO_SAMPLE_PREFIX = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
-
-# Patterns that indicate a placeholder in the matched snippet.
-# - example\.com: reserved documentation hostname in DB/connection URIs
-# - sk-test-/sk-live-: key prefix with a DASH (real keys use sk_test_ /
-#   sk_live_ with underscore); these are placeholder values
-_DOC_PLACEHOLDER_RE = re.compile(
-    r"(?:"
-    r"example\.com"
-    r"|sk-test-[a-zA-Z0-9]+"
-    r"|sk-live-[a-zA-Z0-9]+"
-    r")"
+# Canonical example JWT from jwt.io. The FULL token (header.payload.signature)
+# is the placeholder. Only an exact match on the complete token suppresses; a
+# token that shares the header.payload but has a different (real) signature is
+# NOT suppressed, because the signature is the secret-bearing segment.
+_JWT_IO_SAMPLE_FULL = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+    "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 )
 
 
-def _is_doc_placeholder(snippet):
+def _is_doc_placeholder(snippet, full_line=""):
     """Return True if the matched snippet is a canonical placeholder
-    that must not be flagged as a real secret."""
+    that must not be flagged as a real secret.
+
+    Checks are EXACT full-string matches on the snippet, never substring
+    searches. A real credential in a URI whose host contains 'example.com'
+    (e.g. db.example.com) is NOT suppressed because the full URI string does
+    not match any known placeholder. The full_line parameter is available for
+    callers that want to pass the complete source line for additional context.
+    """
     if snippet in _DOC_PLACEHOLDER_EXACT:
         return True
-    if snippet.startswith(_JWT_IO_SAMPLE_PREFIX):
+    if snippet == _JWT_IO_SAMPLE_FULL:
         return True
-    return bool(_DOC_PLACEHOLDER_RE.search(snippet))
+    return False
 
 # Detection rules load from the shipped pack at import time (rule_loader
 # memoizes, so this parses once per process). load_pack returns None only when
@@ -137,7 +140,7 @@ def scan_file(file_path, rel_path):
                 match = rule.regex.search(line)
                 if match:
                     snippet = match.group(0)
-                    if _is_doc_placeholder(snippet):
+                    if _is_doc_placeholder(snippet, full_line=line):
                         continue
                     if len(snippet) > 80:
                         snippet = snippet[:77] + "..."
@@ -194,7 +197,7 @@ def scan_text(text, rel_path):
             match = rule.regex.search(line)
             if match:
                 snippet = match.group(0)
-                if _is_doc_placeholder(snippet):
+                if _is_doc_placeholder(snippet, full_line=line):
                     continue
                 if len(snippet) > 80:
                     snippet = snippet[:77] + "..."

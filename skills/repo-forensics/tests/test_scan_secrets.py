@@ -116,25 +116,27 @@ class TestDocPlaceholderSuppression:
             f"got {[f.snippet for f in ghp_findings]}"
         )
 
-    def test_example_com_db_uri_not_flagged(self, tmp_path):
-        """DB URIs with example.com hosts are placeholder values."""
+    def test_example_com_db_uri_with_real_password_flagged(self, tmp_path):
+        """DB URIs with example.com hosts and real-looking passwords ARE
+        flagged. The example.com substring alone does not suppress a real
+        credential (red-team FN-20/FN-24). Only exact known placeholder URIs
+        are suppressed."""
         (tmp_path / "docs.md").write_text(
-            "postgres://admin:secret@db.example.com:5432/app\n"
-            "mysql://admin:secret@db.example.com:3306/app\n"
-            "mongodb+srv://admin:secret@cluster.example.com/app\n"
-            "redis://default:secret@redis.example.com/1\n"
+            "postgres://admin:SuperSecret123@db.example.com:5432/app\n"
         )
         findings = _scan_repo(tmp_path)
         db_findings = [f for f in findings
                        if "Connection URI" in f.title or "Embedded Password" in f.title]
-        assert db_findings == [], (
-            f"example.com DB URIs were flagged; "
+        assert db_findings, (
+            f"DB URI with real password at example.com was NOT flagged; "
             f"got {[f.snippet for f in db_findings]}"
         )
 
     def test_jwt_sample_not_flagged(self, tmp_path):
-        """The canonical example JWT (header+payload) is a placeholder,
-        regardless of the signature value."""
+        """The canonical full example JWT (header.payload.signature) from
+        jwt.io is a placeholder and is not flagged. Only the EXACT full token
+        is suppressed; a token sharing the header.payload but with a different
+        signature is still flagged (red-team FN-23)."""
         (tmp_path / "docs.md").write_text(
             "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
             "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
@@ -147,16 +149,33 @@ class TestDocPlaceholderSuppression:
             f"got {[f.snippet for f in jwt_findings]}"
         )
 
-    def test_sk_live_dash_not_flagged(self, tmp_path):
-        """sk-live- (with dash, not underscore) is a placeholder value.
-        Real keys use sk_live_ with underscore."""
+    def test_jwt_with_different_signature_flagged(self, tmp_path):
+        """A JWT that shares the jwt.io sample header.payload but has a
+        different (real) signature IS flagged. The signature is the
+        secret-bearing segment and must not be ignored (red-team FN-23)."""
+        (tmp_path / "docs.md").write_text(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "ZmFrZVJlYWxTaWduYXR1cmVWYWx1ZQ\n"
+        )
+        findings = _scan_repo(tmp_path)
+        jwt_findings = [f for f in findings if "JWT" in f.title]
+        assert jwt_findings, (
+            f"JWT with different signature was NOT flagged; "
+            f"got {[f.snippet for f in jwt_findings]}"
+        )
+
+    def test_sk_live_dash_flagged(self, tmp_path):
+        """sk-live- (with dash) is NOT suppressed as a placeholder because
+        a real payment processor could use a dash prefix. Only exact known
+        placeholder values are suppressed (red-team FN-22)."""
         (tmp_path / "docs.md").write_text(
             "NEXT_PUBLIC_SECRET_KEY='sk-live-abc123def456ghi789jkl012'\n"
         )
         findings = _scan_repo(tmp_path)
         live_findings = [f for f in findings if "NEXT_PUBLIC" in f.title]
-        assert live_findings == [], (
-            f"sk-live- placeholder was flagged; "
+        assert live_findings, (
+            f"sk-live- key was NOT flagged; "
             f"got {[f.snippet for f in live_findings]}"
         )
 
