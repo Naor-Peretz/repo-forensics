@@ -17,6 +17,10 @@ sys.path.insert(0, os.path.abspath(SCRIPTS_DIR))
 
 import session_scan  # noqa: E402
 
+_POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX shell/process behavior not available on Windows"
+)
+
 
 # ========================================================================
 # Helpers
@@ -164,6 +168,7 @@ class TestScanDirectory:
         assert checksums == {}
 
 
+@_POSIX_ONLY
 class TestDiscoverItems:
     def test_discovers_plugins(self, mock_home):
         plugin_cache = os.path.join(mock_home, ".claude", "plugins", "cache")
@@ -555,6 +560,7 @@ class TestKillSwitch:
 # Integration: main() end-to-end
 # ========================================================================
 
+@_POSIX_ONLY
 class TestMainIntegration:
     def test_no_items_first_run(self, mock_home, monkeypatch, capsys):
         monkeypatch.setattr(session_scan, 'refresh_threat_databases', lambda: [])
@@ -704,6 +710,7 @@ class TestLatency:
 # Deep scan (full 18-scanner suite via subprocess)
 # ========================================================================
 
+@_POSIX_ONLY
 class TestDeepScanItem:
     def test_missing_script_returns_empty(self, tmp_dir, monkeypatch):
         monkeypatch.setattr(session_scan, 'RUN_FORENSICS_SCRIPT', '/nonexistent/script.sh')
@@ -813,6 +820,7 @@ class TestDeepScanItem:
         assert any("CRITICAL" in f for f in findings)
 
 
+@_POSIX_ONLY
 class TestDeepScanIntegration:
     def test_deep_scan_skipped_first_run(self, mock_home, monkeypatch, capsys):
         """First run should NOT deep scan (too many items, no baseline yet)."""

@@ -2,9 +2,14 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+_POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX shell/process behavior not available on Windows"
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -115,6 +120,7 @@ def test_openclaw_third_party_command_survives_inside_shared_matcher(monkeypatch
     assert owned_command not in commands
 
 
+@_POSIX_ONLY
 def test_openclaw_verify_rejects_stale_owned_command(monkeypatch, tmp_path):
     home = tmp_path / ".openclaw"
     monkeypatch.setenv("OPENCLAW_HOME", str(home))
