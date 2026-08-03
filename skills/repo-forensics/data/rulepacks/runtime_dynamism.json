@@ -411,9 +411,9 @@
       "type": "regex",
       "pattern": "module_from_spec\\s*\\(",
       "title": "module_from_spec() - runtime module loading from spec",
-      "severity": "critical",
+      "severity": "low",
       "confidence": 0.85,
-      "category": "self-modification",
+      "category": "dynamic-import",
       "explanation": "module_from_spec() - runtime module loading from spec.",
       "examples": {
         "match": [

@@ -220,9 +220,16 @@ def scan_file_regex(file_path, rel_path):
         rules = _RULES_BY_CATEGORY.get(category)
         if not rules:
             continue
-        findings.extend(core.scan_rule_patterns(
-            content, rel_path, rules, category, severity, SCANNER_NAME
-        ))
+        severities = {getattr(rule, "severity", severity) for rule in rules}
+        for rule_severity in severities:
+            severity_rules = tuple(
+                rule for rule in rules
+                if getattr(rule, "severity", severity) == rule_severity
+            )
+            findings.extend(core.scan_rule_patterns(
+                content, rel_path, severity_rules, category,
+                rule_severity, SCANNER_NAME
+            ))
 
     return findings
 

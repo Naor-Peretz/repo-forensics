@@ -407,12 +407,12 @@ def run_targeted_scan(repo_path):
         import forensics_core as core
         finding_objs = core.findings_from_dicts(all_findings)
         if finding_objs:
-            correlated = core.correlate(finding_objs)
+            correlated = core.correlate(finding_objs, repo_path=repo_path)
             all_findings.extend(cf.to_dict() for cf in correlated)
     except (ImportError, AttributeError, KeyError, TypeError, ValueError) as e:
         print(f"[!] Correlation failed: {e}", file=sys.stderr)
 
-    return all_findings
+    return [f for f in all_findings if f.get("scanner") != "trifecta_raw"]
 
 
 def build_pipe_to_shell_warning(command):

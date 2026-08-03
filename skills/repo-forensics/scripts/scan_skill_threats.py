@@ -92,10 +92,9 @@ PREREQUISITE_RULES = _rules_for_category("prerequisite-attack")
 EXFIL_RULES = _rules_for_category("credential-exfiltration")
 # The credential-exfil rules historically emitted at different severities by
 # sub-table; we re-derive the split from rule id so the call sites keep the same
-# per-table default severity (parity). 005-007 = bulk-env critical, 008 = single
-# env-access medium, 001-004 = webhook/base64/readfile critical.
-EXFIL_RULES_CRITICAL = tuple(r for r in EXFIL_RULES if r.id in ("ST-EX-005", "ST-EX-006", "ST-EX-007"))
-EXFIL_RULES_MEDIUM = tuple(r for r in EXFIL_RULES if r.id == "ST-EX-008")
+# per-table default severity. Bulk and individual environment reads are low
+# standalone capabilities; correlations may escalate a proven network flow.
+EXFIL_RULES_LOW = tuple(r for r in EXFIL_RULES if r.id in ("ST-EX-005", "ST-EX-006", "ST-EX-007", "ST-EX-008"))
 EXFIL_RULES_OTHER = tuple(r for r in EXFIL_RULES if r.id in ("ST-EX-001", "ST-EX-002", "ST-EX-003", "ST-EX-004"))
 CREDENTIAL_PATH_RULES = _rules_for_category("credential-path-directive")
 PERSISTENCE_RULES = _rules_for_category("persistence")
@@ -107,6 +106,9 @@ UPDATE_CHANNEL_RULES = _rules_for_category("update-channel")
 SUB_AGENT_SPAWN_RULES = _rules_for_category("sub-agent-spawn")
 AUTHORITY_FRAMING_RULES = _rules_for_category("authority-framing")
 MEMORY_HEIST_RULES = _rules_for_category("memory-heist-exfil")
+MEMORY_HEIST_GENERAL_RULES = tuple(r for r in MEMORY_HEIST_RULES if r.id not in ("ST-MH-003", "ST-MH-004"))
+MEMORY_HEIST_UA_RULES = tuple(r for r in MEMORY_HEIST_RULES if r.id == "ST-MH-003")
+MEMORY_HEIST_PII_RULES = tuple(r for r in MEMORY_HEIST_RULES if r.id == "ST-MH-004")
 
 # ============================================================
 # Category 2: Invisible Unicode Smuggling (critical)
@@ -636,9 +638,8 @@ def scan_content(content, rel_path, budget=None):
         findings.extend(scan_rules(content, rel_path, PREREQUISITE_RULES, "prerequisite-attack", "critical"))
 
     if ext in code_exts or is_agent_instruction_file:
-        # Cat 4: Credential exfiltration (bulk = critical, single = medium)
-        findings.extend(scan_rules(content, rel_path, EXFIL_RULES_CRITICAL, "credential-exfiltration", "critical"))
-        findings.extend(scan_rules(content, rel_path, EXFIL_RULES_MEDIUM, "credential-exfiltration", "medium"))
+        # Cat 4: Environment access is a capability until a sink is proven.
+        findings.extend(scan_rules(content, rel_path, EXFIL_RULES_LOW, "credential-exfiltration", "low"))
         findings.extend(scan_rules(content, rel_path, EXFIL_RULES_OTHER, "credential-exfiltration", "critical"))
         # Cat 5: Persistence
         findings.extend(scan_rules(content, rel_path, PERSISTENCE_RULES, "persistence", "high"))
@@ -703,8 +704,25 @@ def scan_content(content, rel_path, budget=None):
     # Detects keyboard exfiltration, fake authentication, user-agent routing,
     # PII-to-URL encoding, and tool-limitation exploitation.
     if ext in text_exts or ext in code_exts:
-        findings.extend(scan_rules(content, rel_path, MEMORY_HEIST_RULES,
+        findings.extend(scan_rules(content, rel_path, MEMORY_HEIST_GENERAL_RULES,
                                    "memory-heist-exfil", "critical"))
+        if ext in code_exts:
+            code_content = '\n'.join(
+                line for line in content.splitlines()
+                if not line.lstrip().startswith(('#', '//', '/*', '*'))
+            )
+            findings.extend(scan_rules(code_content, rel_path, MEMORY_HEIST_UA_RULES,
+                                       "memory-heist-exfil", "high"))
+        privacy_doc = os.path.basename(rel_path).lower() in {
+            'privacy.md', 'security.md', 'privacy.txt', 'security.txt'
+        }
+        if (is_agent_instruction_file or ext in text_exts) and not privacy_doc:
+            pii_content = '\n'.join(
+                line for line in content.splitlines()
+                if not re.search(r'(?i)^\\s*(?:find\\s|#|//)', line)
+            )
+            findings.extend(scan_rules(pii_content, rel_path, MEMORY_HEIST_PII_RULES,
+                                       "memory-heist-exfil", "critical"))
 
     # Cat 16: Morse code encoding (Grok/Bankrbot, May 2026)
     findings.extend(scan_morse_encoding(content, rel_path))

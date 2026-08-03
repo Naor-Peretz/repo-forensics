@@ -435,147 +435,147 @@
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-006.py",
     1,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-006.py",
     2,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-006.py",
     3,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-006.py",
     4,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-007.py",
     5,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-008.py",
     1,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-008.py",
     2,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-008.py",
     3,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-008.py",
     4,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-CP-009.py",
     5,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-DYN-002.py",
     1,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-003.py",
     1,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-003.py",
     2,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-003.py",
     3,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-003.py",
     4,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-003.py",
     5,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-004.py",
     2,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "RD-LOC-004.py",
     5,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "SA-PY-014.py",
     2,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "mcp_SM-RUG-003.py",
     1,
     "credential-exfiltration"
   ],
   [
     "Environment variable access",
-    "medium",
+    "low",
     "mcp_SM-XDOM-001.py",
     1,
     "credential-exfiltration"
@@ -2146,27 +2146,6 @@
     "Unicode Variation Selector",
     "ST-VS-001.md",
     "unicode-smuggling"
-  ],
-  [
-    "User-agent-based content routing: AI-agent-specific content serving (Memory Heist, July 2026)",
-    "critical",
-    "ST-MH-003.md",
-    1,
-    "memory-heist-exfil"
-  ],
-  [
-    "User-agent-based content routing: AI-agent-specific content serving (Memory Heist, July 2026)",
-    "critical",
-    "ST-MH-003.md",
-    2,
-    "memory-heist-exfil"
-  ],
-  [
-    "User-agent-based content routing: AI-agent-specific content serving (Memory Heist, July 2026)",
-    "critical",
-    "ST-MH-003.md",
-    3,
-    "memory-heist-exfil"
   ],
   [
     "Variable interpolation in hook script (command injection risk)",

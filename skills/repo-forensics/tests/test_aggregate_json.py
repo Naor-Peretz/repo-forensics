@@ -58,6 +58,20 @@ def test_build_report_multiple_scanners_with_mixed_results(tmp_path):
     assert report["scanners"][1]["stderr"] == "debug warning"
 
 
+def test_trifecta_raw_leaf_is_internal_only(tmp_path):
+    repo = tmp_path / "repo"
+    results = tmp_path / "results"
+    repo.mkdir()
+    results.mkdir()
+    (repo / "build.py").write_text("import subprocess\nsubprocess.run(['make'])\n")
+
+    report = module.build_report(str(results), str(repo), "false")
+
+    assert not any(f.get("scanner") == "trifecta_raw" for f in report["findings"])
+    assert not any(s.get("name") == "trifecta_raw" for s in report["scanners"])
+    assert report["summary"]["total"] == 0
+
+
 def test_build_report_malformed_scanner_output_surfaces_parse_error(tmp_path):
     _write(tmp_path / "bad.out", "{oops")
     _write(tmp_path / "bad.err", "")

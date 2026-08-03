@@ -130,12 +130,14 @@ class TestLethalTrifectaDoesNotFire:
     def test_empty(self):
         assert core.correlate([]) == []
 
-    def test_three_primitives_different_files(self):
+    def test_three_primitives_different_files(self, tmp_path):
         """Cross-file splitting: exec in file A, network in B, credential in C.
 
-        Rule 19 is currently per-file, so this should NOT fire. (Module-level
-        correlation is listed in the security review as a harder P1 upgrade.)
+        A contributor-rooted import chain proves the files are linked.
         """
+        (tmp_path / "a.py").write_text("import b\n")
+        (tmp_path / "b.py").write_text("import c\n")
+        (tmp_path / "c.py").write_text("# credential leaf\n")
         findings = [
             _make("sast", "os.system( call", "os.system code execution",
                   "code-execution", filepath="a.py"),
@@ -145,8 +147,43 @@ class TestLethalTrifectaDoesNotFire:
                   ".aws/credentials file access", "credential-read",
                   filepath="c.py"),
         ]
-        correlated = core.correlate(findings)
-        assert not any(c.category == "lethal-trifecta" for c in correlated)
+        correlated = core.correlate(findings, repo_path=str(tmp_path))
+        trifecta = [c for c in correlated if c.category == "lethal-trifecta"]
+        assert len(trifecta) == 1
+        assert trifecta[0].severity == "high"
+        assert "Cross-File" in trifecta[0].title
+
+    def test_star_topology_does_not_fire(self, tmp_path):
+        (tmp_path / "main.py").write_text("import shell_utils\nimport api_client\nimport config\n")
+        for name in ("shell_utils", "api_client", "config"):
+            (tmp_path / f"{name}.py").write_text("# leaf\n")
+        findings = [
+            _make("sast", "subprocess.run", "code execution", "code-execution", "shell_utils.py"),
+            _make("dataflow", "requests.post(", "outbound network", "exfiltration", "api_client.py"),
+            _make("secrets", ".aws/credentials", "credential read", "credential-read", "config.py"),
+        ]
+        assert not any(c.category == "lethal-trifecta" for c in core.correlate(findings, str(tmp_path)))
+
+    def test_unlinked_trio_does_not_fire(self, tmp_path):
+        for name in ("a", "b", "c"):
+            (tmp_path / f"{name}.py").write_text("# unlinked\n")
+        findings = [
+            _make("sast", "subprocess.run", "code execution", "code-execution", "a.py"),
+            _make("dataflow", "requests.post(", "outbound network", "exfiltration", "b.py"),
+            _make("secrets", ".aws/credentials", "credential read", "credential-read", "c.py"),
+        ]
+        assert not any(c.category == "lethal-trifecta" for c in core.correlate(findings, str(tmp_path)))
+
+    def test_external_only_import_does_not_fire(self, tmp_path):
+        (tmp_path / "a.py").write_text("import external_package\n")
+        (tmp_path / "b.py").write_text("# network\n")
+        (tmp_path / "c.py").write_text("# credential\n")
+        findings = [
+            _make("sast", "subprocess.run", "code execution", "code-execution", "a.py"),
+            _make("dataflow", "requests.post(", "outbound network", "exfiltration", "b.py"),
+            _make("secrets", ".aws/credentials", "credential read", "credential-read", "c.py"),
+        ]
+        assert not any(c.category == "lethal-trifecta" for c in core.correlate(findings, str(tmp_path)))
 
 
 class TestLethalTrifectaFalsePositiveDefenses:
@@ -362,11 +399,9 @@ class TestTrifectaRawScannerFalsePositiveDefenses:
             "# This comment mentions webhook and browser data for doc purposes\n"
         )
         findings = core.detect_trifecta_raw(str(tmp_path))
-        # Would previously emit 3 findings due to webhook/api_key/browser data
-        # matching bare keywords in comments. Now: zero.
-        assert len(findings) == 0, (
-            f"CI script false-positived on trifecta_raw: {[f.title for f in findings]}"
-        )
+        # The exec leaf is retained internally, while generic env access and
+        # prose do not create credential/network legs.
+        assert [f.title for f in findings] == ["Code execution primitive"]
 
     def test_api_key_in_variable_name_not_flagged(self, tmp_path):
         """A file with `api_key` as a variable name but no actual credential
