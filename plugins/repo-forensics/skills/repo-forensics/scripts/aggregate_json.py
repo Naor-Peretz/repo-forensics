@@ -785,7 +785,7 @@ def apply_capability_declarations(all_findings, repo_path):
     return all_findings, ledger
 
 
-def run_correlation_pass(all_findings):
+def run_correlation_pass(all_findings, repo_path=None):
     """Run the forensics_core.correlate() engine on aggregated findings.
 
     Rules 1-19 operate on cross-scanner findings in the same file (e.g.
@@ -810,7 +810,9 @@ def run_correlation_pass(all_findings):
     # Pass a lazy iterator so correlate() builds its by_file dict without
     # a separate intermediate Finding list existing alongside all_findings.
     try:
-        correlated = core.correlate(core.findings_from_dicts_iter(all_findings))
+        correlated = core.correlate(
+            core.findings_from_dicts_iter(all_findings), repo_path=repo_path
+        )
     except (AttributeError, KeyError, TypeError, ValueError) as e:
         # Narrow the except to expected types so NameError / ImportError bugs
         # in new correlation rules fail loud during development instead of
@@ -874,7 +876,7 @@ def build_report(tmpdir, repo_path, skill_scan):
     # scanner's output together. Without this, Rule 19 Lethal Trifecta
     # (exec + network + credential read) and the other 18 rules never fire
     # in the primary run_forensics.sh workflow.
-    correlated_findings = run_correlation_pass(all_findings)
+    correlated_findings = run_correlation_pass(all_findings, repo_path=repo_path)
     if correlated_findings:
         all_findings.extend(correlated_findings)
         # Add a synthetic scanner entry so the aggregate output shows
@@ -886,6 +888,14 @@ def build_report(tmpdir, repo_path, skill_scan):
             "finding_count": len(correlated_findings),
             "findings": correlated_findings,
         })
+
+    # Raw trifecta leaves exist solely to feed correlation. They must never
+    # affect user-visible findings, counts, verdicts, or scanner sections.
+    all_findings = [
+        finding for finding in all_findings
+        if finding.get("scanner") != "trifecta_raw"
+    ]
+    scanners = [scanner for scanner in scanners if scanner.get("name") != "trifecta_raw"]
 
     # Per-finding suppression (U1). User-suppressed findings are pulled out of
     # the active set BEFORE summary/exit-code computation so they cannot affect

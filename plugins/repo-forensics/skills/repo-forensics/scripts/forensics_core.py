@@ -8,6 +8,7 @@ Created by Alex Greenshpun
 """
 
 import math
+import ast
 import os
 import re
 import sys
@@ -941,7 +942,8 @@ def walk_aux(repo_path, ignore_patterns=None, skip_dirs=None, *,
 # legitimate code comments, variable names, and doc strings and caused
 # false-positive Rule 19 hits on every CI/integration test repo.
 _TRIFECTA_EXEC_RE = re.compile(
-    r'(?:os\.system\s*\(|subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(|'
+    r'(?:os\.(?:system|popen)\s*\(|pty\.spawn\s*\(|subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(|'
+    r'runpy\.run_(?:path|module)\s*\(|importlib\.import_module\s*\(|'
     r'child_process\.(?:exec|spawn|execSync)\s*\(|(?<![a-zA-Z_])eval\s*\(|'
     r'(?<![a-zA-Z_])exec\s*\(|shell\s*=\s*True)'
 )
@@ -950,10 +952,11 @@ _TRIFECTA_NETWORK_RE = re.compile(
     # Removed bare `webhook`, `reverse[\s_-]?shell`, and `node-fetch` which
     # were prose-level keywords that matched comments and docstrings.
     r'(?:http\.client\.HTTPS?Connection|urllib\.request\.urlopen|'
-    r'requests\.(?:post|get|put|delete)\s*\(|socket\.(?:connect|send|sendto)\s*\(|'
+    r'requests\.(?:post|get|put|delete)\s*\(|socket\.(?:connect|create_connection|send|sendto)\s*\(|'
+    r'urllib3\.PoolManager\s*\(|'
     r'axios\.(?:post|get|put|delete)\s*\(|'
     r'\bfetch\s*\(\s*[\'"]https?://|'
-    r'httpx\.(?:post|get|put|delete|Client)\s*\(|'
+    r'httpx\.(?:post|get|put|delete|stream|Client|AsyncClient)\s*\(|'
     r'aiohttp\.ClientSession|'
     r'/dev/tcp/)'
 )
@@ -965,7 +968,8 @@ _TRIFECTA_CREDENTIAL_RE = re.compile(
     # `.aws/credentials_fake_helper` do not match.
     r'(?:\.ssh/id_(?:rsa|ed25519|dsa|ecdsa)\b|'
     r'\.aws/credentials\b|\.aws/config\b|'
-    r'\.netrc\b|/etc/shadow\b|'
+    r'\.netrc\b|/etc/(?:shadow|passwd)\b|keyring\.get_password\s*\(|'
+    r'os\.popen\s*\(\s*[\'\"]printenv\b|'
     r'\b(?:GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)\b|'
     r'\.env(?!\.example|\.template)(?:\s|\)|\'|"|$))'
 )
@@ -1046,10 +1050,9 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
             if exec_hit and network_hit and credential_hit:
                 break  # early exit: we have enough for Rule 19 to fire
 
-        # Only emit synthetic primitive findings when ALL THREE are present in
-        # the file. This tightens the feed into Rule 19's correlation loop —
-        # we never claim a file has only 1-2 primitives via this path.
-        if exec_hit and network_hit and credential_hit:
+        # Emit every present primitive. These leaves are correlation-only and
+        # are filtered from user output by the aggregate/report layer.
+        if exec_hit:
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Code execution primitive",
@@ -1058,6 +1061,7 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
                 snippet=exec_hit[1],
                 category="code-execution",
             ))
+        if network_hit:
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Outbound network primitive",
@@ -1066,6 +1070,7 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
                 snippet=network_hit[1],
                 category="exfiltration",
             ))
+        if credential_hit:
             findings.append(Finding(
                 scanner="trifecta_raw", severity="high",
                 title="Credential read primitive",
@@ -1335,7 +1340,90 @@ def findings_from_dicts_iter(dicts):
             continue
 
 
-def correlate(findings):
+def _build_local_import_graph(repo_path):
+    """Return {relative_python_file: {relative_python_file, ...}} local imports."""
+    module_files = {}
+    python_files = []
+    for file_path, rel_path in walk_repo(repo_path, skip_binary=True, skip_lockfiles=True):
+        if not rel_path.endswith('.py'):
+            continue
+        rel_path = rel_path.replace(os.sep, '/')
+        python_files.append((file_path, rel_path))
+        module = rel_path[:-3].replace('/', '.')
+        module_files[module] = rel_path
+        if module.endswith('.__init__'):
+            module_files[module[:-9]] = rel_path
+
+    def resolve(module):
+        while module:
+            if module in module_files:
+                return module_files[module]
+            module = module.rpartition('.')[0]
+        return None
+
+    graph = {rel_path: set() for _, rel_path in python_files}
+    for file_path, rel_path in python_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as source:
+                tree = ast.parse(source.read(), filename=rel_path)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        package = rel_path[:-3].replace('/', '.').split('.')[:-1]
+        for node in ast.walk(tree):
+            candidates = []
+            if isinstance(node, ast.Import):
+                candidates.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    keep = max(0, len(package) - node.level + 1)
+                    prefix = package[:keep]
+                    base = '.'.join(prefix + ([node.module] if node.module else []))
+                else:
+                    base = node.module or ''
+                if base:
+                    candidates.append(base)
+                candidates.extend(
+                    '.'.join(part for part in (base, alias.name) if part)
+                    for alias in node.names if alias.name != '*'
+                )
+            elif (isinstance(node, ast.Call) and node.args
+                  and isinstance(node.args[0], ast.Constant)
+                  and isinstance(node.args[0].value, str)):
+                func = node.func
+                if (isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Name)
+                        and (func.value.id, func.attr) in {
+                            ('importlib', 'import_module'), ('runpy', 'run_module')
+                        }):
+                    candidates.append(node.args[0].value)
+            for candidate in candidates:
+                target = resolve(candidate)
+                if target and target != rel_path:
+                    graph[rel_path].add(target)
+    return graph
+
+
+def _cross_file_trifecta(by_file, exec_files, network_files, credential_files,
+                         repo_path):
+    if not repo_path or not all((exec_files, network_files, credential_files)):
+        return None
+    graph = _build_local_import_graph(repo_path)
+    contributors = exec_files | network_files | credential_files
+    for root in sorted(contributors):
+        reached, pending = {root}, list(graph.get(root, ()))
+        while pending:
+            current = pending.pop()
+            if current in reached:
+                continue
+            reached.add(current)
+            pending.extend(graph.get(current, ()))
+        if (reached & exec_files and reached & network_files
+                and reached & credential_files):
+            return root
+    return None
+
+
+def correlate(findings, repo_path=None):
     """Flag compound threats where multiple findings in the same file form attack chains.
 
     Rules:
@@ -1739,14 +1827,14 @@ def correlate(findings):
             "credential read", "credential-read", "credential file",
             "credential access", "credential theft", "credential exfil",
             "secret read", "secret-read", "secret exfil",
-            "env access", "env-access", ".env read", ".env access",
-            "env_key read",
+            ".env read", ".env access",
             ".ssh/id_", ".aws/credentials", ".aws/config",
             ".netrc", "id_rsa", "id_ed25519",
             "keychain access", "keychain read",
-            "github_token", "api_key read", "api-key read",
-            "browser data", "private key read", "token theft",
-            "os.environ.get", "os.environ[",
+            "github_token", "gh_token", "npm_token", "aws_secret_access_key",
+            "aws_access_key_id", "private key read", "token theft",
+            "/etc/shadow", "/etc/passwd", "keyring.get_password(",
+            "os.popen('printenv", 'os.popen("printenv',
         }
 
         def _primitive_finding_ids(keywords):
@@ -2153,6 +2241,32 @@ def correlate(findings):
             snippet="[compound: update channel + sub-agent spawn across repo]",
             category="deferred-sub-agent-chain"
         ))
+
+    # Cross-file Rule 19 is deliberately contributor-rooted. A non-contributor
+    # entry point importing three unrelated capability leaves is not evidence
+    # of composition and therefore cannot trigger this rule.
+    if by_file:
+        exec_files, network_files, credential_files = set(), set(), set()
+        for filepath, file_findings in by_file.items():
+            if any(any(kw in f._tags for kw in trifecta_exec_keywords) for f in file_findings):
+                exec_files.add(filepath)
+            if any(any(kw in f._tags for kw in trifecta_network_keywords) for f in file_findings):
+                network_files.add(filepath)
+            if any(any(kw in f._tags for kw in trifecta_credential_keywords) for f in file_findings):
+                credential_files.add(filepath)
+        root = _cross_file_trifecta(
+            by_file, exec_files, network_files, credential_files, repo_path
+        )
+        if root and not (root in exec_files & network_files & credential_files):
+            correlated.append(Finding(
+                scanner="correlation", severity="high",
+                title="Cross-File Lethal Trifecta",
+                description=("A primitive-holding Python module transitively imports "
+                             "repo-local modules containing the other two trifecta legs."),
+                file=root, line=0,
+                snippet="[compound: contributor-rooted import reachability]",
+                category="lethal-trifecta",
+            ))
 
     # Evidence model (Track A): set each compound's evidence_class from its
     # contributing leaves. Per-file compounds derive from that file's findings
