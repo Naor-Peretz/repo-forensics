@@ -1520,7 +1520,6 @@ def correlate(findings, repo_path=None):
             return "structural"
         return "inferred"
 
-
     for filepath, file_findings in by_file.items():
         # Rule 1: env access + network call
         if has_category(file_findings, env_keywords) and has_category(file_findings, network_keywords):
