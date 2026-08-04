@@ -1247,24 +1247,24 @@
  ],
  [
   "module_from_spec() - runtime module loading from spec",
-  "low",
+  "critical",
   "RD-SMOD-003.py",
   1,
-  "dynamic-import"
+  "self-modification"
  ],
  [
   "module_from_spec() - runtime module loading from spec",
-  "low",
+  "critical",
   "RD-SMOD-003.py",
   2,
-  "dynamic-import"
+  "self-modification"
  ],
  [
   "module_from_spec() - runtime module loading from spec",
-  "low",
+  "critical",
   "RD-SMOD-003.py",
   3,
-  "dynamic-import"
+  "self-modification"
  ],
  [
   "new Function() from fetched content (JS)",

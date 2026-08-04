@@ -11,15 +11,6 @@ import scan_runtime_dynamism as scanner
 
 
 class TestDynamicImports:
-    def test_module_from_spec_is_low_dynamic_import(self, tmp_path):
-        f = tmp_path / "loader.py"
-        f.write_text("mod = importlib.util.module_from_spec(spec)\n")
-        findings = scanner.scan_file(str(f), "loader.py")
-        hits = [finding for finding in findings if finding.rule_id == "RD-SMOD-003"]
-        assert len(hits) == 1
-        assert hits[0].severity == "low"
-        assert hits[0].category == "dynamic-import"
-
     def test_importlib_import_module_variable(self, tmp_path):
         f = tmp_path / "loader.py"
         f.write_text(

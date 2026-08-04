@@ -2148,6 +2148,27 @@
     "unicode-smuggling"
   ],
   [
+    "User-agent-based content routing: AI-agent-specific content serving (Memory Heist, July 2026)",
+    "critical",
+    "ST-MH-003.md",
+    1,
+    "memory-heist-exfil"
+  ],
+  [
+    "User-agent-based content routing: AI-agent-specific content serving (Memory Heist, July 2026)",
+    "critical",
+    "ST-MH-003.md",
+    2,
+    "memory-heist-exfil"
+  ],
+  [
+    "User-agent-based content routing: AI-agent-specific content serving (Memory Heist, July 2026)",
+    "critical",
+    "ST-MH-003.md",
+    3,
+    "memory-heist-exfil"
+  ],
+  [
     "Variable interpolation in hook script (command injection risk)",
     "critical",
     "ST-PR-010.md",
