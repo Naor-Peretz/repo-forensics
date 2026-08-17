@@ -160,10 +160,15 @@ class ObfuscationVisitor(ast.NodeVisitor):
                 obj_arg = node.args[0]
                 attr_arg = node.args[1]
                 obj_name = obj_arg.id if isinstance(obj_arg, ast.Name) else None
-                # Support both ast.Str (old) and ast.Constant (new)
+                # Support both ast.Constant (3.8+) and ast.Str (deprecated 3.8,
+                # REMOVED 3.12+). Guard the bare ast.Str reference with hasattr so
+                # evaluating it does not AttributeError on 3.12+ (it crashed the whole
+                # scanner on modern Python), mirroring the guarded sites below and in
+                # scan_entrypoint.py. ast.Constant already covers every string literal
+                # on 3.8+, so this branch is dead weight there and live only on <3.12.
                 if isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str):
                     attr_val = attr_arg.value
-                elif isinstance(attr_arg, ast.Str):
+                elif hasattr(ast, "Str") and isinstance(attr_arg, ast.Str):
                     attr_val = attr_arg.s
                 else:
                     attr_val = None
