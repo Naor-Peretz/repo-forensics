@@ -518,8 +518,7 @@ def scan_js_anti_forensics(file_path, rel_path):
 
         lines = content.split('\n')
         for i, line in enumerate(lines):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue  # MAX_LINE_LENGTH guard
+            line = core.clip_line(line)
             for pattern, desc in ANTI_FORENSICS_PATTERNS:
                 if pattern.search(line):
                     findings.append(core.Finding(
@@ -559,8 +558,7 @@ def scan_js_install_iocs(file_path, rel_path):
             content = f.read()
 
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
             for pattern, desc in INSTALL_SCRIPT_IOC_PATTERNS:
                 if pattern.search(line):
                     findings.append(core.Finding(
@@ -748,9 +746,9 @@ def scan_pth_files(file_path, rel_path):
     # Pre-filter with simple 'in' check to avoid ReDoS on long alphanumeric lines
     base64_pattern = re.compile(r'[A-Za-z0-9+/]{40,}={0,2}')
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if len(stripped) > 10000:
-            continue  # MAX_LINE_LENGTH guard against ReDoS
+        # Truncate rather than skip: a `continue` here let a payload hide behind
+        # 10k characters of padding on the same line.
+        stripped = core.clip_line(line.strip())
         # Skip filesystem paths (legitimate .pth content)
         if stripped.startswith('/') or stripped.startswith('.') or 'site-packages' in stripped:
             continue
@@ -924,8 +922,7 @@ def scan_second_coming_indicators(file_path, rel_path):
             content = f.read()
 
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue  # MAX_LINE_LENGTH guard
+            line = core.clip_line(line)
 
             for pattern, desc in SECOND_COMING_PATTERNS:
                 if pattern.search(line):
@@ -1120,8 +1117,7 @@ def scan_shai_hulud_family_indicators(file_path, rel_path):
             content = f.read()
 
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue  # MAX_LINE_LENGTH guard
+            line = core.clip_line(line)
             for patterns, category, title_prefix, description in ioc_groups:
                 for pattern, desc in patterns:
                     if pattern.search(line):

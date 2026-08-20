@@ -46,21 +46,16 @@ import forensics_core as core
 # Code extensions: the union consumers already use (scan_skill_threats
 # code_exts) plus the YARA payload families (.ps1/.psm1/.bat/.cmd/.vbs/.hta/
 # .jsp/.jspx/.asp/.aspx/.pl/.lua/.psgi/.cgi).
-_CODE_EXTS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".rb", ".sh", ".bash", ".zsh",
-    ".go", ".rs", ".php", ".java", ".swift", ".kt",
-    ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".hta",
-    ".jsp", ".jspx", ".asp", ".aspx",
-    ".pl", ".lua", ".psgi", ".cgi",
-}
+# Code / config extension sets are OWNED by forensics_core (the shared base) so
+# this gate and core.infer_evidence_class classify code-vs-doc from one source.
+# Aliased here (not redefined) — divergence between the two engines is exactly
+# what shipped the docs/helper.py + readme.php suppression bypasses.
+_CODE_EXTS = core._CODE_EXTS
 
 # Operational data extensions. A live miner config is .json (batch-B
 # real-config.json); must NOT be demoted by default -> config maps to direct
 # under the YARA policy.
-_CONFIG_EXTS = {
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml",
-    ".csv", ".env", ".properties", ".lock",
-}
+_CONFIG_EXTS = core._CONFIG_EXTS
 
 # Test-fixture path segments (EXACT segment equality, not substring — the
 # _AUTHORITY_FP_PATH_RE substring sloppiness that hit latest/ and protest/
@@ -95,11 +90,9 @@ _SECURITY_DOC_STEMS = {"security", "privacy"}
 
 # Shebang interpreters that upgrade a no-extension/unknown-ext file from
 # binary to code (extensionless hook scripts / dropped stagers, design §2.2).
-_SHEBANG_INTERPRETERS = (
-    "sh", "bash", "zsh", "python", "python2", "python3",
-    "perl", "ruby", "php", "node", "pwsh", "powershell",
-)
-_SHEBANG_RE = re.compile(r"^#!\s*(?:/usr/bin/env\s+)?(\S+)")
+# CANONICAL in forensics_core (both engines must upgrade the same stagers).
+_SHEBANG_INTERPRETERS = core._SHEBANG_INTERPRETERS
+_SHEBANG_RE = core._SHEBANG_RE
 
 # Adblock-style filter rule line: ||example.com^ or ! comment or @@exception.
 # Very specific to filter-list payloads; JSON/CSV config arrays do not match,
@@ -173,34 +166,29 @@ def _normalize_parts(rel_path):
     if not rel_path:
         return [], ""
     norm = rel_path.replace("\\", "/").lower()
-    raw = [p for p in norm.split("/") if p]
-    parts = []
-    for p in raw:
-        if p == ".":
-            continue
-        if p == "..":
-            if parts:
-                parts.pop()
-            # A leading ``..`` that escapes root has nothing to pop: drop it so
-            # it cannot carry a demoting segment into the membership checks.
-            continue
-        parts.append(p)
-    return parts, norm
+    # Delegate the '.'/'..' collapse to the canonical core normalizer so this
+    # gate and core._is_doc_file agree on escaped paths (docs/../shell.php).
+    return core._normalize_path_parts(rel_path), norm
 
 
 def _basename_stem(rel_path):
-    """Lowercased basename stem (no ext). '' for empty input."""
+    """Lowercased basename stem (no ext). '' for empty input.
+
+    Trailing dots/spaces are stripped first (core._EXT_TRAILING_JUNK): Windows
+    drops them when executing, so `evil.py ` must stem to `evil`, exactly as
+    core._is_doc_file sees it."""
     if not rel_path:
         return ""
     base = os.path.basename(rel_path.replace("\\", "/"))
+    base = base.rstrip(core._EXT_TRAILING_JUNK)
     return os.path.splitext(base)[0].lower()
 
 
 def _ext(rel_path):
-    """Lowercased extension incl. leading dot. '' for empty input."""
-    if not rel_path:
-        return ""
-    return os.path.splitext(rel_path)[1].lower()
+    """Lowercased extension incl. leading dot, normalized against the trailing
+    dot/space bypass. Delegates to core so both engines key allowlists on the
+    same string. '' for empty input."""
+    return core.normalized_ext(rel_path)
 
 
 def _decode_content(content):
@@ -228,41 +216,22 @@ def _decode_content(content):
 # classify_file_context
 # ---------------------------------------------------------------------------
 
-def _is_doc_carrier(ext, stem, parts):
-    """Doc-carrier signal, gated by extension (FIX 1, design §2.2 refined).
-
-    The doc-EXTENSION branch (``.md``/``.txt`` cheatsheets) always demotes: a
-    doc extension can never be executed as a webshell by a web server. The
-    doc-BASENAME (``readme``, ``license``, ``changelog``, ...) and doc-PATH-
-    SEGMENT (``docs/``, ``documentation/``) branches demote ONLY when the
-    extension is a doc extension OR empty/unknown — NEVER on a code extension.
-    A live payload on an executable extension (``readme.php``, ``license.bat``,
-    ``docs/shell.php``) is code, not prose, regardless of its basename stem or
-    the directory it sits in. Config extensions are operational data, not prose,
-    so they are not demoted by the basename/path branches either.
-    """
-    if ext in core._DOC_EXTS:
-        return True
-    if ext in _CODE_EXTS or ext in _CONFIG_EXTS:
-        return False
-    # empty / unknown extension: basename + path-segment branches apply.
-    if stem in core._DOC_BASENAMES:
-        return True
-    return any(seg in core._DOC_PATH_SEGMENTS for seg in parts)
+def _is_doc_carrier(ext, stem, parts, content=None):
+    """Doc-carrier signal — delegates to the CANONICAL core._is_doc_carrier so
+    this gate and core.infer_evidence_class can never disagree. Rationale
+    (doc-ext always demotes; code/config ext never
+    demote — readme.php/license.bat/docs/shell.php are live code; empty/unknown
+    ext falls back to basename + docs/ path segment) lives at the core
+    definition. `content` (optional) enables the shebang code-check for
+    extensionless files, which must run BEFORE any name/path demotion.
+    Signature preserved for existing callers."""
+    return core._is_doc_carrier(ext, stem, parts, content=content)
 
 
 def _shebang_is_code(text):
-    """True if line 1 is a #! shebang for a known interpreter. Never raises."""
-    if not text:
-        return False
-    first = text.split("\n", 1)[0]
-    m = _SHEBANG_RE.match(first)
-    if not m:
-        return False
-    interp = m.group(1).lower()
-    # Strip a leading path component: /usr/bin/python -> python.
-    interp_base = os.path.basename(interp)
-    return interp_base in _SHEBANG_INTERPRETERS or interp in _SHEBANG_INTERPRETERS
+    """True if line 1 is a #! shebang for a known interpreter. Delegates to the
+    canonical core implementation. Never raises."""
+    return core._shebang_is_code(text)
 
 
 def _content_is_blocklist(text):
@@ -300,12 +269,20 @@ def classify_file_context(rel_path, content=None):
         ext = _ext(norm_path)
         stem = _basename_stem(norm_path)
 
+        # Decoded once: the shebang upgrade and the doc-carrier content check
+        # both need it, and the blocklist content shape reuses it.
+        text = _decode_content(content) if content is not None else None
+
         # --- primary (precedence: agent-instruction > prose-doc > code >
         # config > binary; design §2.2) ---
+        # `content` is handed to the doc-carrier check so the shebang
+        # code-test runs BEFORE the extensionless doc demotion. Previously
+        # `docs/installer` (#!/bin/bash) was classified prose-doc and the
+        # shebang upgrade below was unreachable.
         primary = "binary"
         if core._is_agent_instruction_file(norm_path):
             primary = "agent-instruction"
-        elif _is_doc_carrier(ext, stem, parts):
+        elif _is_doc_carrier(ext, stem, parts, content=text):
             primary = "prose-doc"
         elif ext in _CODE_EXTS:
             primary = "code"
@@ -315,28 +292,51 @@ def classify_file_context(rel_path, content=None):
             primary = "binary"
             # Shebang upgrade: a no-extension / unknown-ext file whose first
             # line is a known-interpreter shebang is a script, not a blob.
-            text = _decode_content(content)
             if text and _shebang_is_code(text):
                 primary = "code"
 
+        # A carrier that EXECUTES or holds operational data is never demoted by
+        # a directory name. The demoting path-segment signals
+        # below are attacker-choosable — a live `tests/shell.php` webshell or a
+        # `filters/webshell.php` dropper was demoted to LOW purely by folder,
+        # blinding the only byte-signature detector. Mirrors the
+        # code-extension carve-out already applied to the blocklist BASENAME
+        # token.
+        #
+        # Config carriers join the carve-out. A live miner/exfil config
+        # (`tests/config.json`, `filters/config.yaml`, `denylists/data.xml`) is
+        # operational data, not a test fixture — folder placement must not demote
+        # a live critical YARA payload to inferred -> LOW -> exit 0. Mirrors
+        # scan_skill_threats._mh_gate_demotes, which already lists "config" in
+        # its carrier carve-out.
+        code_carrier = (primary in ("code", "agent-instruction", "config")
+                        or ext in _CODE_EXTS or ext in _CONFIG_EXTS)
+
         # --- is_test_fixture (path segment OR anchored basename) ---
+        # The anchored BASENAME signals (test_x.py, x_test.go, conftest.py) stay
+        # ungated: those names are chosen by the project, describe real test
+        # code, and carry the FP mass the gate exists to suppress. Only the
+        # PATH-SEGMENT signal is gated on a non-code carrier.
         is_test_fixture = (
-            any(seg in _TEST_PATH_SEGMENTS for seg in parts)
+            (not code_carrier
+             and any(seg in _TEST_PATH_SEGMENTS for seg in parts))
             or any(rx.match(os.path.basename(norm)) for rx in _TEST_BASENAME_RES)
         )
 
         # --- is_blocklist (filename token OR path segment OR content shape) ---
-        # FIX 1: the basename-token signal is restricted to non-code extensions
-        # (config/prose/binary) — a .bat named blacklist.bat or a .php named
-        # denylist.php is a runnable dropper / live webshell, not a filter list.
-        # The path-segment + content-shape signals stay for real filter-list
-        # files (denylists/rules.txt, adblock-style content).
+        # Every blocklist signal is restricted to non-code
+        # carriers — a .bat named blacklist.bat, a .php named denylist.php, and
+        # a .php under filters/ are all runnable droppers / live webshells, not
+        # filter lists. The signals stay for real filter-list files
+        # (denylists/rules.txt, adblock-style content).
         is_blocklist = (
             (ext not in _CODE_EXTS and bool(_BLOCKLIST_TOKEN_RE.search(stem)))
-            or any(seg in _BLOCKLIST_PATH_SEGMENTS for seg in parts)
+            or (not code_carrier
+                and any(seg in _BLOCKLIST_PATH_SEGMENTS for seg in parts))
         )
-        if not is_blocklist:
-            text = _decode_content(content) if content is not None else None
+        if not is_blocklist and not code_carrier:
+            # Content shape stays available for real filter lists (a .txt/.dat
+            # of ||domain^ rules), never for an executable carrier.
             if text and _content_is_blocklist(text):
                 is_blocklist = True
 

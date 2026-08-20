@@ -146,7 +146,7 @@ DETECT_BLOB_FLOOR = 32
 # definition (was duplicated verbatim in entropy + skill_threats).
 EDGE_DELIMS = '"\'`'
 
-# Base85 charset — the CORRECTED classes (adversarial P1-1). The old wiring regex
+# Base85 charset — the CORRECTED classes. The old wiring regex
 # was `[!-u]` (0x21-0x75), which EXCLUDES `v w x y z { | } ~` — 9 of the chars
 # RFC1924 base85 (what base64.b85encode / b85decode consume) actually uses. ~99.8%
 # of real b85 blobs contain at least one excluded char, so they were SPLIT into
@@ -193,7 +193,7 @@ def detect_encoded_blobs(text, floor=DETECT_BLOB_FLOOR):
 
     The base85 alphabet here is the CORRECTED union of a85 and RFC1924 b85, so a
     real `base64.b85encode` payload (which uses v-z / {|}~) is matched WHOLE and
-    routed to decode instead of being split into sub-floor fragments (P1-1).
+    routed to decode instead of being split into sub-floor fragments.
     """
     res = ENCODED_BLOB_RES if floor == DETECT_BLOB_FLOOR else build_blob_res(floor)
     blobs = []
@@ -285,7 +285,7 @@ _SENSITIVE_FILE_RE = re.compile(
     r"\.npmrc|\.netrc|\.git-credentials|\.docker/config)",
     re.IGNORECASE,
 )
-# Single dangerous statement (adversarial P1-2): a ONE-statement destructive /
+# Single dangerous statement: a ONE-statement destructive /
 # exec / process-spawn / dynamic-import call that the multi-statement
 # `_looks_code_like` pre-filter and the SAST/trifecta gate historically missed,
 # so e.g. `shutil.rmtree("/")` one base64 layer deep returned ZERO findings. This
@@ -504,7 +504,7 @@ def _decoded_finding(alphabet, depth, origin_path, indicator, rule_id,
 def _decoded_payload_checks(text, origin_path, alphabet, depth):
     """Targeted checks that broaden the report gate beyond SAST/trifecta (KTD8):
     flag getattr-based dispatch, urllib/http exfil, sensitive-file reads, AND a
-    single destructive/exec/process-spawn call (P1-2) in decoded plaintext.
+    single destructive/exec/process-spawn call in decoded plaintext.
     Returns list[Finding] (possibly empty)."""
     findings = []
     for category, rx, label in _DECODED_CHECKS:

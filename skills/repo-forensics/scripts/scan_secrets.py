@@ -168,8 +168,7 @@ def scan_file(file_path, rel_path):
 
         for i, line in enumerate(lines):
             # Skip mega-lines to prevent O(n^2) regex backtracking
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
 
             for rule in _RULES:
                 _emit_line_findings(findings, rule, line, i + 1, rel_path)
@@ -204,8 +203,7 @@ def scan_text(text, rel_path):
 
     # split('\n') for parity with scan_file's readlines().
     for i, line in enumerate(text.split('\n')):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for rule in _RULES:
             _emit_line_findings(findings, rule, line, i + 1, rel_path)
     return findings

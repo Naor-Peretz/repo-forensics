@@ -865,14 +865,23 @@ class TestMemoryHeistGating:
         # Scanner-level severity is unchanged (the cap is the report layer's job).
         assert all(h.severity == "critical" for h in hits)
 
-    def test_shell_find_list_in_fence_demotes_pii_url(self, tmp_path):
-        """Restored from cc440b3 as a gating test. The real token-optimizer FP
-        is a `$(find -L ... opencode/plugins ... -name measure.py -path ...)`
-        shell snippet inside a ```bash fence in SKILL.md: ST-MH-004 fires
-        because "opencode" contains "encode", "-name" supplies "name", and
-        "-path" supplies "path". The gate demotes it to inferred because the
-        matched line is inside a CLOSED fence in an agent-instruction file.
-        The rule FIRES; the gate demotes (fenced-code), never suppresses."""
+    def test_shell_find_list_in_fence_stays_direct(self, tmp_path):
+        """A ``` fence inside an AGENT-INSTRUCTION file no longer demotes.
+
+        An agent does not read a fenced block in SKILL.md / CLAUDE.md /
+        AGENTS.md as an inert sample — it runs it. Demoting on the fence gave
+        an attacker a one-line wrapper (put the directive in a ```bash block)
+        that dropped a critical memory-heist directive to LOW.
+
+        The known cost is the token-optimizer FP this test used to pin: a
+        `$(find -L ... opencode/plugins ... -name measure.py -path ...)`
+        snippet trips ST-MH-004 ("opencode" contains "encode", "-name" supplies
+        "name", "-path" supplies "path"). That is the same trade already
+        accepted for code comments — agents read both.
+
+        Fenced blocks in genuine PROSE docs (a .md that is NOT an agent
+        instruction file) still demote; see the docs/ test below.
+        """
         f = tmp_path / "SKILL.md"
         f.write_text(
             "## Setup\n"
@@ -884,10 +893,28 @@ class TestMemoryHeistGating:
         findings = scanner.scan_file(str(f), "SKILL.md")
         hits = [finding for finding in findings if finding.rule_id == "ST-MH-004"]
         assert hits, "ST-MH-004 must still fire on the fenced shell sample"
-        assert all(h.evidence_class == "inferred" for h in hits), (
-            "fenced shell sample in SKILL.md must demote to inferred (fenced-code)"
+        assert all(h.evidence_class != "inferred" for h in hits), (
+            "a fenced block in an agent-instruction file is executed, not read"
         )
         assert all(h.severity == "critical" for h in hits)
+
+    def test_fenced_sample_in_prose_doc_still_demotes(self, tmp_path):
+        """The fenced-code demotion survives for real prose docs, which is what
+        it was designed for — only the agent-instruction carve-out changed."""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        f = docs / "guide.md"
+        f.write_text(
+            "## Setup\n"
+            "```bash\n"
+            '$(find -L "$HOME/.claude/skills" "$HOME/.config/opencode/plugins" '
+            "-type f -name measure.py -path '*scripts*')\n"
+            "```\n"
+        )
+        findings = scanner.scan_file(str(f), "docs/guide.md")
+        hits = [finding for finding in findings if finding.rule_id == "ST-MH-004"]
+        assert hits, "ST-MH-004 must still fire"
+        assert all(h.evidence_class == "inferred" for h in hits)
 
     # --- code-comment MH stays CRITICAL (Alex's call, 2026-08-05) ---
 

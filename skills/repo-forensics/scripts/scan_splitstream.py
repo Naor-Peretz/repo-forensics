@@ -19,7 +19,7 @@ scan_oversize). In a SINGLE O(n) collection pass it:
     all-pairs O(n^2) comparison).
 
 Reassembly then unions ALL length bands of the same alphabet into one logical
-group (P2-2): an attacker controls fragment sizes, so a single payload's
+group: an attacker controls fragment sizes, so a single payload's
 fragments can be spread across MANY non-adjacent bands (band 1, 4, 7, ...); the
 band is only an O(1) collection-bucketing key (KTD5) and must NOT gate
 reassembly. The bounded multi-ordering (capped at MAX_GROUP_MEMBERS members,
@@ -111,7 +111,7 @@ MIN_FRAGMENT_LEN = 12
 # share an alphabet share a fingerprint, so they BUCKET in O(1) per fragment via
 # a dict (KTD5). Never compare fragments pairwise. The band is ONLY a collection
 # bucketing key — at reassembly _merged_groups unions ALL bands of an alphabet
-# into one group (P2-2), so fragments spread across non-adjacent bands by an
+# into one group, so fragments spread across non-adjacent bands by an
 # attacker still reassemble. The bounded ordering sweep does the rest.
 LENGTH_BAND_WIDTH = 16
 
@@ -201,7 +201,7 @@ def _fingerprint(fragment):
     key bucket together via a dict; no pairwise comparison is ever performed.
     ALL bands of the same alphabet are unioned at reassembly (see _merged_groups)
     so a payload whose fragments are spread across any number of bands — even
-    deliberately non-adjacent ones — still reassembles (P2-2)."""
+    deliberately non-adjacent ones — still reassembles."""
     alphabet = _alphabet_of(fragment)
     band = len(fragment) // LENGTH_BAND_WIDTH
     return (alphabet, band)
@@ -320,8 +320,8 @@ def _read_text(file_path):
 
 
 def _merged_groups(groups):
-    """Union ALL length bands of the SAME ALPHABET into one logical group (P2-2
-    fix). `groups` maps (alphabet, band) -> list[(rel_path, frag)].
+    """Union ALL length bands of the SAME ALPHABET into one logical group.
+    `groups` maps (alphabet, band) -> list[(rel_path, frag)].
 
     The length-band was only ever an O(1) BUCKETING key for the collection pass
     (KTD5: no all-pairs comparison). It must NOT also gate reassembly: an attacker
@@ -511,7 +511,7 @@ def scan_repo(repo_path, ignore_patterns=None):
         if ex_stats.get("deadline_hit"):
             break
 
-    # --- Reassembly pass over groups merging ALL same-alphabet bands (P2-2) ---
+    # --- Reassembly pass over groups merging ALL same-alphabet bands ---
     for alphabet, band_lo, members in _merged_groups(groups):
         if time.monotonic() > deadline:
             _add_budget_note("<splitstream>", "splitstream-scan-incomplete")

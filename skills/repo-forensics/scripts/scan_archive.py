@@ -46,6 +46,7 @@ Created by Alex Greenshpun
 
 import io
 import os
+import re
 import sys
 import tarfile
 import time
@@ -192,9 +193,63 @@ def _finding(severity, title, desc, file, category, snippet=""):
     )
 
 
+# Content shapes that mark a decoded member as CODE regardless of its name.
+# The member name is attacker-controlled, so a zip member called README.md can
+# hold a live payload — naming it after a doc previously demoted every inner
+# finding to LOW and let the archive report exit 0.
+_CODE_SHAPE_RE = re.compile(
+    r"^\s*(?:#!|<\?php|<%|import\s+\w|from\s+[\w.]+\s+import\b|"
+    r"(?:async\s+)?function\s+\w+\s*\(|def\s+\w+\s*\(|class\s+\w+\b|"
+    r"(?:const|let|var)\s+\w+\s*=|package\s+\w|using\s+\w|require\s*\(|"
+    r"module\.exports\b|export\s+(?:default|const|function)\b)",
+    re.MULTILINE)
+
+
+def _member_is_code(text):
+    """True if a decoded archive member LOOKS like code/script content.
+
+    Content-based on purpose: the evidence class of an inner finding must never
+    be decided by the member or archive NAME, both of which the attacker picks.
+    """
+    if not text:
+        return False
+    return bool(core._shebang_is_code(text) or _CODE_SHAPE_RE.search(text))
+
+
+def _tag_member_evidence(findings, text):
+    """Pin the evidence class of a member's findings from sniffed CONTENT.
+
+    Without this, `core.infer_evidence_class` reads the vpath — which begins
+    with the ARCHIVE's name and ends with the MEMBER's name — so `notes.md`
+    (a zip) containing `README.md` demoted a lethal trifecta to LOW and the
+    report exited 0 with coverage=COMPLETE. A member that carries code shape is
+    `direct`; anything else keeps whatever the scanner inferred."""
+    if not _member_is_code(text):
+        return findings
+    for f in findings:
+        f.evidence_class = "direct"
+    return findings
+
+
+# Severity ranks used when recomputing the archive wrapper's severity.
+_SEV_RANK = ("critical", "high", "medium", "low")
+
+
+def _effective_severity(finding):
+    """A finding's severity AFTER the report layer's evidence cap.
+
+    The wrapper summarises what the archive actually contains, so it must be
+    computed from post-cap severities — otherwise it advertises a critical the
+    report will grade LOW, or is itself demoted by the archive's
+    doc-shaped name."""
+    if getattr(finding, "evidence_class", "") in ("inferred", "structural"):
+        return "low"
+    return finding.severity
+
+
 def _max_sev(findings):
-    for sev in ("critical", "high", "medium", "low"):
-        if any(f.severity == sev for f in findings):
+    for sev in _SEV_RANK:
+        if any(_effective_severity(f) == sev for f in findings):
             return sev
     return "low"
 
@@ -204,10 +259,15 @@ def _emit_inner(label, inner, findings):
     Shared by _scan_zip and _scan_tar (identical emit block)."""
     if not inner:
         return
-    findings.append(_finding(_max_sev(inner), "Payload hidden inside archive",
-                             f"{label} contains {len(inner)} finding(s) in its members "
-                             f"(archive indirection — opaque to source scanners).",
-                             label, "archive-indirection"))
+    # evidence_class is pinned direct: an archive containing a payload is a
+    # structural FACT about bytes on disk. Inferring it from `label` let an
+    # attacker name the archive `notes.md` and demote the whole wrapper.
+    wrapper = _finding(_max_sev(inner), "Payload hidden inside archive",
+                       f"{label} contains {len(inner)} finding(s) in its members "
+                       f"(archive indirection — opaque to source scanners).",
+                       label, "archive-indirection")
+    wrapper.evidence_class = "direct"
+    findings.append(wrapper)
     findings.extend(inner)
 
 
@@ -249,7 +309,7 @@ def _scan_member_text(data, vpath):
     out.extend(core.scan_text_trifecta(text, vpath))
     out.extend(scan_secrets.scan_text(text, vpath))
     out.extend(scan_skill_threats.scan_content(text, vpath))
-    return out
+    return _tag_member_evidence(out, text)
 
 
 def _stream_read(fh, claimed_size, compress_size, state):

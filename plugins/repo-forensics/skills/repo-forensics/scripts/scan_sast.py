@@ -78,7 +78,7 @@ CSS_STEG_PATTERNS = [
 CSS_STEG_EXTENSIONS = {'.html', '.htm', '.svg', '.jsx', '.tsx', '.vue', '.md'}
 
 def scan_css_steganography(file_path, rel_path):
-    ext = os.path.splitext(file_path)[1].lower()
+    ext = core.normalized_ext(file_path)
     if ext not in CSS_STEG_EXTENSIONS:
         return []
     findings = []
@@ -89,8 +89,7 @@ def scan_css_steganography(file_path, rel_path):
         return []
     lines = content.split('\n')
     for i, line in enumerate(lines):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for pat, title in CSS_STEG_PATTERNS:
             if pat.search(line):
                 findings.append(core.Finding(
@@ -116,8 +115,13 @@ def scan_file(file_path, rel_path):
             return [_pack_load_finding(rel_path)]
         return []
 
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext not in _PACK_EXTENSIONS:
+    # Resolve through the SHARED gate. It normalizes the trailing
+    # dot/space that Windows strips when executing (`evil.py ` / `evil.py.`
+    # both run as evil.py but keyed as ".py " / "." here, missing every
+    # allowlist and skipping the ENTIRE ruleset), and routes language variants
+    # (.mjs/.cjs/.pyw/.phtml) to their family's rules instead of dropping them.
+    ext = core.resolve_scan_ext(file_path, _PACK_EXTENSIONS)
+    if not ext:
         return []
 
     # rules_for_extension keeps the hot loop O(rules-for-ext) per line.
@@ -127,8 +131,7 @@ def scan_file(file_path, rel_path):
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
             for i, line in enumerate(lines):
-                if len(line) > core.MAX_LINE_LENGTH:
-                    continue
+                line = core.clip_line(line)
                 for rule in rules:
                     if rule.regex.search(line):
                         findings.append(core.Finding(
@@ -171,7 +174,7 @@ def scan_text(text, rel_path, ext=None):
         return []
 
     if ext is None:
-        ext = os.path.splitext(rel_path)[1].lower()
+        ext = core.resolve_scan_ext(rel_path, _PACK_EXTENSIONS)
     if ext not in _PACK_EXTENSIONS:
         return []
 
@@ -180,8 +183,7 @@ def scan_text(text, rel_path, ext=None):
     # split('\n') for parity with scan_file's readlines() (line numbers + no
     # Unicode-line-boundary split-evasion).
     for i, line in enumerate(text.split('\n')):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for rule in rules:
             if rule.regex.search(line):
                 findings.append(core.Finding(

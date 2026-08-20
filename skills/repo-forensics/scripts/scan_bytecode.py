@@ -155,6 +155,61 @@ def _poison_markers_vs_source(raw, sibling_path, rel_path):
     )]
 
 
+# Raw-byte marker groups for the oversized-.pyc path. The source-shaped
+# trifecta regexes are useless here: a .pyc never contains the literal
+# `os.system(` — marshal stores `os` and `system` as separate length-prefixed
+# co_names. These are the same markers the poison detector diffs against
+# source, grouped by what they prove.
+_PREFIX_EXEC_MARKERS = (b"system", b"popen", b"Popen", b"subprocess", b"eval",
+                        b"exec", b"__import__", b"compile", b"marshal")
+_PREFIX_NET_MARKERS = (b"urlopen", b"urlretrieve", b"socket", b"http://",
+                       b"https://", b"/dev/tcp")
+_PREFIX_CRED_MARKERS = (b"environ", b"getenv", b".ssh/id_", b".aws/credentials",
+                        b".netrc", b"/etc/shadow")
+
+
+def _marker_hits(raw, markers):
+    """Markers present in `raw`. Short identifier markers are matched with the
+    marshal length prefix (as _poison_markers_vs_source does) so a substring of
+    a longer name or an embedded path does not count; markers containing a
+    non-identifier character are matched literally."""
+    found = []
+    for m in markers:
+        literal = not m.isalnum()
+        if (m in raw) if literal else ((bytes([len(m)]) + m) in raw):
+            found.append(m.decode("ascii", "replace"))
+    return found
+
+
+def _prefix_primitives(raw, rel_path):
+    """Dangerous primitives in the readable prefix of a .pyc too large to
+    disassemble.
+
+    HIGH requires CO-OCCURRENCE (an exec primitive plus a network or credential
+    primitive) — the trifecta shape. A single marker is left alone: `environ`
+    or `exec` alone appears in plenty of legitimate bytecode, and the LOW
+    unanalyzable note plus the coverage-gap floor already make the uninspected
+    file visible."""
+    execs = _marker_hits(raw, _PREFIX_EXEC_MARKERS)
+    nets = _marker_hits(raw, _PREFIX_NET_MARKERS)
+    creds = _marker_hits(raw, _PREFIX_CRED_MARKERS)
+    if not execs or not (nets or creds):
+        return []
+    markers = ", ".join(execs[:4] + nets[:4] + creds[:4])
+    return [core.Finding(
+        scanner=SCANNER_NAME, severity="high",
+        title="Hidden logic in oversized bytecode",
+        description=(
+            "A .pyc padded past the size cap (so it is never disassembled) "
+            "still references an execution primitive together with a network "
+            "or credential primitive in its readable prefix — the trifecta "
+            f"shape, invisible to source-only scanners. Markers: {markers}."
+        ),
+        file=rel_path, line=0, snippet=markers[:120],
+        category="bytecode-hidden-logic",
+    )]
+
+
 def _parse_blob(blob):
     names, consts, imported = set(), [], set()
     for line in blob.split("\n"):
@@ -330,12 +385,35 @@ def scan_pyc(pyc_path, rel_path):
     if header_len is None:
         findings.append(_unanalyzable(rel_path, "unrecognized .pyc magic"))
         return findings
-    if size > MAX_PYC_BYTES:
-        findings.append(_unanalyzable(rel_path, f"file too large ({size} bytes)"))
-        return findings
 
     sibling = _sibling_py(pyc_path)
     has_source = os.path.exists(sibling)
+
+    if size > MAX_PYC_BYTES:
+        # The size cap bounds the CHILD's memory, not our willingness
+        # to look. Returning here emitted only a LOW coverage note over a .pyc
+        # that Python still loads and runs — an attacker just pads past 5 MB.
+        # The load-bearing detectors work on raw bytes, so run them on the
+        # prefix we already read before giving up on disassembly.
+        findings.append(_unanalyzable(rel_path, f"file too large ({size} bytes)"))
+        if has_source:
+            findings.extend(_poison_markers_vs_source(raw, sibling, rel_path))
+        prefix_hits = _prefix_primitives(raw, rel_path)
+        findings.extend(prefix_hits)
+        if prefix_hits and not has_source:
+            findings.append(core.Finding(
+                scanner=SCANNER_NAME, severity="high",
+                title="Orphan bytecode with hidden logic",
+                description=(
+                    "A .pyc shipped without its .py source, padded past the "
+                    "size cap, AND containing a matched dangerous primitive in "
+                    "the readable prefix — bytecode-only delivery of code that "
+                    "evades source review."
+                ),
+                file=rel_path, line=0, snippet="no sibling .py",
+                category="orphan-bytecode",
+            ))
+        return findings
 
     # (1) LOAD-BEARING detector — no execution, no unmarshal, cross-version-safe:
     # danger primitives in the raw bytecode that are absent from the sibling

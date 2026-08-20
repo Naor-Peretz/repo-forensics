@@ -80,6 +80,33 @@ All notable changes to repo-forensics. Versions follow semver.
   crypto-loader coverage. Full suite green except the pre-existing checksum-drift
   gate (clears on re-sign).
 
+## [2.14.2] - 2026-08-20
+
+### Security: detection hardened to fail closed
+
+Severity and the pass/fail exit code now key on what code does, not on surface cues an attacker
+controls, closing a class of bypasses where a payload could dodge detection by its location, name,
+extension, wrapping, or by hiding behind a scan limit.
+
+- Location no longer changes severity: a finding under `docs/`, `tests/`, `fixtures/`, `filters/`,
+  or in a file named `readme`/`license` is graded on its content, not its folder or filename.
+  Identical bytes get an identical verdict everywhere.
+- Obfuscation-resistant classification: executable code disguised as a log/print call, a string
+  literal, or a shell command-substitution is no longer read as inert text; character-class and
+  single-star `.forensicsignore` patterns are treated like their plain equivalents.
+- No silent passes behind scan limits: unsupported archives (`.7z`/`.rar`), deeply nested archives,
+  oversized files, over-cap bytecode, and deeply-encoded blobs can no longer report clean; an
+  executable artifact the scanner could not fully inspect now floors the exit code.
+- Suppression is visible and bounded: a `.forensicsignore` that hides source is always surfaced,
+  wholesale suppression escalates, and suppressing a critical finding is flagged as tampering;
+  legitimate scoped ignores keep working.
+- The two evidence classifiers now share one fail-closed core, guarded by a test that fails the
+  build if they ever disagree.
+
+Recommended: update from 2.14.x. Earlier versions can under-report on obfuscated, archived, or
+oversized payloads. Thanks to Naor Peretz ([@Naor-Peretz](https://github.com/Naor-Peretz)) for the
+private report that started this work.
+
 ## [2.13.2] - 2026-08-05
 
 ### Changed: Memory-Heist context-gating (fewer false positives, no lost attacks)

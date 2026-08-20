@@ -24,3 +24,7 @@ __pycache__/
 
 # Devin CLI tooling artifact
 .devin/
+TORTURE-FINDINGS.md
+FIX-MANDATE.md
+*.patch
+review-*.md

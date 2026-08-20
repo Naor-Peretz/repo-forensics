@@ -130,7 +130,14 @@ class TestTestFixture:
         assert gate.classify_file_context("tests/test_x.py").is_test_fixture
 
     def test_test_segment(self):
-        assert gate.classify_file_context("test/foo.py").is_test_fixture
+        # Non-code carrier under a test/ segment still reads as a fixture.
+        assert gate.classify_file_context("test/foo.bin").is_test_fixture
+
+    def test_test_segment_does_not_demote_code(self):
+        # The PATH-SEGMENT signal must not fire on an executable
+        # carrier. `tests/` is attacker-choosable, and a live webshell parked
+        # there was demoted to LOW purely by folder name.
+        assert not gate.classify_file_context("test/foo.py").is_test_fixture
 
     def test_underscore_tests_segment(self):
         assert gate.classify_file_context("src/__tests__/copilot.test.ts").is_test_fixture
@@ -139,10 +146,15 @@ class TestTestFixture:
         assert gate.classify_file_context("fixtures/webshell.bin").is_test_fixture
 
     def test_spec_segment(self):
-        assert gate.classify_file_context("spec/thing.py").is_test_fixture
+        assert gate.classify_file_context("spec/thing.bin").is_test_fixture
+        # ...but not for a code carrier.
+        assert not gate.classify_file_context("spec/thing.py").is_test_fixture
+        # ...nor for a config carrier: a live miner config under spec/ is
+        # operational data, not a fixture.
+        assert not gate.classify_file_context("spec/thing.json").is_test_fixture
 
     def test_golden_segment(self):
-        assert gate.classify_file_context("golden/pack.json").is_test_fixture
+        assert gate.classify_file_context("golden/pack.bin").is_test_fixture
 
     def test_test_underscore_py_basename(self):
         assert gate.classify_file_context("test_webshells.py").is_test_fixture
@@ -399,9 +411,12 @@ class TestYaraPolicy:
             gate.classify_file_context("SKILL.md"), policy="yara") == "inferred"
 
     def test_flags_win_over_primary(self):
-        # A .php under tests/ -> inferred (flag wins over code primary).
-        ctx = gate.classify_file_context("tests/shell.php")
-        assert ctx.primary == "code"
+        # A binary fixture under tests/ -> inferred (flag wins over primary; a
+        # bare binary would otherwise map to direct). CODE and CONFIG
+        # carriers under tests/ no longer set the flag at all, so the
+        # flag-vs-primary precedence is shown with a binary carrier.
+        ctx = gate.classify_file_context("tests/payload.bin")
+        assert ctx.primary == "binary"
         assert ctx.is_test_fixture
         assert gate.gate_evidence(ctx, policy="yara") == "inferred"
 
@@ -466,12 +481,22 @@ class TestGatingEvasionFix:
         assert ctx.primary == "agent-instruction"
         assert gate.gate_evidence(ctx, policy="yara") == "inferred"
 
-    def test_webshell_under_tests_still_demotes(self):
-        # tests/ is a test-fixture path segment -> inferred (accepted residual).
+    def test_webshell_under_tests_stays_direct(self):
+        # Was an accepted residual, now a closed bypass: YARA is the
+        # only byte-signature detector, so demoting a live tests/shell.php to
+        # LOW by folder name blinded it entirely. The folder is chosen by the
+        # scanned repo — it cannot be allowed to grade its own payload.
         ctx = gate.classify_file_context("tests/shell.php")
         assert ctx.primary == "code"
+        assert ctx.is_test_fixture is False
+        assert gate.gate_evidence(ctx, policy="yara") == "direct"
+
+    def test_named_test_file_still_demotes(self):
+        # The anchored BASENAME signals are unchanged: they carry the real FP
+        # mass (dozens of test_*.py loading modules under test) and the name is
+        # descriptive of actual test code, not just a folder.
+        ctx = gate.classify_file_context("tests/test_loader.py")
         assert ctx.is_test_fixture is True
-        assert gate.gate_evidence(ctx, policy="yara") == "inferred"
 
     def test_blocklist_json_config_still_demotes(self):
         # §9 accepted residual: a miner config named blocklist.json (config ext,
@@ -492,6 +517,56 @@ class TestGatingEvasionFix:
         # code extension is ever named SKILL.md, so this precedence is safe.
         ctx = gate.classify_file_context("SKILL.md")
         assert ctx.primary == "agent-instruction"
+
+
+# ---------------------------------------------------------------------------
+# C1 regression teeth: executable extensions that were MISSING from _CODE_EXTS
+# (the shell carriers .ksh/.command/.bashrc/.profile plus .gradle/.scpt/
+# .applescript/.osascript/.wsf/.awk/.ahk/.nse) must fold into the code carve-out
+# on the content-less YARA path. Before the fix these got primary='binary',
+# code_carrier=False, and a tests/ fixtures/ golden/ filters/ denylists/ path
+# segment demoted their YARA match to inferred -> LOW -> exit 0, while
+# _is_comment_or_string treated .command/.ksh as never-inert (an internal
+# contradiction). Fail closed: a runnable carrier is never graded down by an
+# attacker-chosen folder.
+# ---------------------------------------------------------------------------
+_EXEC_CARRIER_EXTS = [
+    ".ksh", ".command", ".bashrc", ".profile",
+    ".gradle", ".scpt", ".applescript", ".osascript", ".wsf", ".awk",
+    ".ahk", ".nse",
+]
+_DEMOTING_SEGMENTS = ["tests", "fixtures", "golden", "filters", "denylists"]
+
+
+class TestExecutableExtensionCarrierNotDemoted:
+    """C1: a content-less executable-extension carrier under a demoting folder
+    must NOT be demoted by the YARA policy; a genuine prose .md under the same
+    folder must still demote."""
+
+    @pytest.mark.parametrize("ext", _EXEC_CARRIER_EXTS)
+    @pytest.mark.parametrize("segment", _DEMOTING_SEGMENTS)
+    def test_exec_carrier_under_demoting_folder_stays_direct(self, ext, segment):
+        rel_path = "{}/evil{}".format(segment, ext)
+        ctx = gate.classify_file_context(rel_path)  # NO content
+        assert ctx.is_test_fixture is False, (
+            f"{rel_path}: is_test_fixture was True; an executable extension "
+            f"must not be treated as a folder-demoted fixture")
+        assert ctx.is_blocklist is False, (
+            f"{rel_path}: is_blocklist was True; an executable extension under "
+            f"a denylist/filter folder is a dropper, not a filter list")
+        assert gate.gate_evidence(ctx, policy="yara") == "direct", (
+            f"{rel_path}: gate_evidence was not 'direct'; a content-less "
+            f"executable carrier must stay at manifest severity / exit-2 "
+            f"regardless of the folder it is parked in")
+
+    @pytest.mark.parametrize("segment", _DEMOTING_SEGMENTS)
+    def test_prose_md_under_demoting_folder_still_demotes(self, segment):
+        rel_path = "{}/notes.md".format(segment)
+        ctx = gate.classify_file_context(rel_path)
+        assert ctx.primary == "prose-doc"
+        assert gate.gate_evidence(ctx, policy="yara") == "inferred", (
+            f"{rel_path}: genuine prose .md must still demote to inferred; "
+            f"the fix is additive to code extensions only")
 
 
 # ---------------------------------------------------------------------------
@@ -519,8 +594,9 @@ class TestTraversalCollapse:
         assert gate.gate_evidence(ctx, policy="yara") == "direct"
 
     def test_real_tests_segment_still_demotes(self):
-        # A non-escaped tests/ segment still demotes (regression guard).
-        ctx = gate.classify_file_context("tests/shell.php")
+        # A non-escaped tests/ segment still demotes a NON-code carrier
+        # (regression guard for the '..' collapse, not for code demotion).
+        ctx = gate.classify_file_context("tests/payload.bin")
         assert ctx.is_test_fixture is True
         assert gate.gate_evidence(ctx, policy="yara") == "inferred"
 
@@ -565,3 +641,73 @@ class TestRobustness:
         assert a == b
         assert hash(a) == hash(b)
         assert a != gate.classify_file_context("x.md")
+
+
+# ---------------------------------------------------------------------------
+# Regression teeth: CONFIG carriers join the code-carrier carve-out.
+# A live miner/exfil config is operational data, not a fixture. Attacker-chosen
+# FOLDER placement (tests/ fixtures/ golden/ spec/ mocks/ ... or filters/
+# denylists/ blocklists/) must NOT set is_test_fixture / is_blocklist on a
+# config carrier, which _yara_policy would otherwise map inferred -> LOW ->
+# exit 0, blinding the only byte-signature detector on a live critical payload.
+# ---------------------------------------------------------------------------
+
+# (rel_path, expected_primary) — each a config carrier under a demoting folder.
+R4_CONFIG_CARRIER_CASES = [
+    ("tests/config.json", "config"),      # test-fixture path segment
+    ("fixtures/config.json", "config"),
+    ("golden/config.json", "config"),
+    ("spec/config.yaml", "config"),
+    ("mocks/config.toml", "config"),
+    ("filters/config.yaml", "config"),    # blocklist path segment
+    ("denylists/config.env", "config"),
+    ("blocklists/data.xml", "config"),
+]
+
+
+class TestConfigCarrierNotDemoted:
+    """A config carrier under a test-fixture or blocklist folder keeps its
+    loud context. Mirrors the code-carrier carve-out and
+    scan_skill_threats._mh_gate_demotes, which already lists 'config'."""
+
+    @pytest.mark.parametrize("rel_path,expected_primary", R4_CONFIG_CARRIER_CASES)
+    def test_config_carrier_folder_does_not_demote(self, rel_path, expected_primary):
+        ctx = gate.classify_file_context(rel_path)
+        assert ctx.primary == expected_primary, (
+            f"{rel_path}: primary was {ctx.primary!r}, expected "
+            f"{expected_primary!r}")
+        assert not ctx.is_test_fixture, (
+            f"{rel_path}: is_test_fixture set on a config carrier — folder "
+            f"placement must not demote operational data")
+        assert not ctx.is_blocklist, (
+            f"{rel_path}: is_blocklist set on a config carrier")
+
+    @pytest.mark.parametrize("rel_path,_", R4_CONFIG_CARRIER_CASES)
+    def test_config_carrier_yara_stays_direct(self, rel_path, _):
+        # The whole point: YARA evidence class stays 'direct' (loud), so a live
+        # critical payload is not graded down to inferred -> LOW -> exit 0.
+        ctx = gate.classify_file_context(rel_path)
+        assert gate.gate_evidence(ctx, policy="yara") == "direct"
+
+    def test_content_blocklist_shape_not_applied_to_config(self):
+        # Even blocklist-shaped CONTENT must not flag a config carrier under a
+        # blocklist folder (the content-shape branch is also code_carrier-gated).
+        content = "||ads.example.com^\n||tracker.io^\n||malware.net^"
+        ctx = gate.classify_file_context("filters/rules.json", content=content)
+        assert not ctx.is_blocklist
+        assert gate.gate_evidence(ctx, policy="yara") == "direct"
+
+    def test_code_carrier_under_tests_still_direct(self):
+        # No regression: code carriers under tests/ already stay loud/direct.
+        ctx = gate.classify_file_context("tests/shell.php")
+        assert ctx.primary == "code"
+        assert not ctx.is_test_fixture
+        assert gate.gate_evidence(ctx, policy="yara") == "direct"
+
+    def test_prose_doc_under_tests_still_demotes(self):
+        # No regression: a genuine prose .md under tests/ still demotes
+        # (intended FP suppression — YARA maps prose-doc -> inferred).
+        ctx = gate.classify_file_context("tests/notes.md")
+        assert ctx.primary == "prose-doc"
+        assert ctx.is_test_fixture
+        assert gate.gate_evidence(ctx, policy="yara") == "inferred"

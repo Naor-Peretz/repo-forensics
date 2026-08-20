@@ -233,8 +233,7 @@ def scan_agent_configs(repo_path):
         if not content:
             continue
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
             for pat in PROMPT_INJECTION_RE:
                 if pat.search(line):
                     findings.append(_F(SCANNER_NAME, "critical", "Safety override in agent config",
@@ -289,8 +288,7 @@ def scan_clawhavoc(repo_path):
         if not content:
             continue
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
             for pat, sev, title in CLAWHAVOC:
                 if pat.search(line):
                     findings.append(_F(SCANNER_NAME, sev, title,
@@ -356,8 +354,7 @@ def scan_config_write_requests(repo_path):
         if not content:
             continue
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
             for pat, title in CONFIG_WRITE_PATTERNS:
                 if pat.search(line):
                     if re.search(r'(?i)\b(?:users?\s+can|you\s+(?:can|may)|documentation|how\s+to)\b', line):
@@ -475,8 +472,7 @@ def scan_memory_poisoning(repo_path):
                 continue
             if in_code_fence and ext in ('.md', '.txt'):
                 continue
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
             for pat, title in MEMORY_POISONING_PATTERNS:
                 if pat.search(line):
                     findings.append(_F(SCANNER_NAME, "high", title,
@@ -556,8 +552,7 @@ def scan_memory_exfil_cooccurrence(repo_path):
         if not content:
             continue
         for i, line in enumerate(content.split('\n')):
-            if len(line) > core.MAX_LINE_LENGTH:
-                continue
+            line = core.clip_line(line)
             for pat in _MEMORY_ACCESS_SIGNALS:
                 m = pat.search(line)
                 if m:

@@ -144,7 +144,11 @@ class TestCoverageStatusInReport:
         report = module.build_report(str(tmp_path), str(repo), "false")
         assert report["coverage_status"]["overall"] == "UNSUPPORTED"
         assert report["coverage_status"]["per_scanner"]["archive"]["status"] == "UNSUPPORTED"
-        assert report["exit_code"] == 0  # coverage does not change exit code
+        # An UNSUPPORTED gap over an ARCHIVE is a live uninspected
+        # indirection, so the report may no longer claim exit 0 over it. The
+        # floor is 1 (review), not 2 — nothing malicious is confirmed.
+        assert report["exit_code"] == 1
+        assert any(f["category"] == "coverage-gap" for f in report["findings"])
 
     def test_build_report_coverage_does_not_change_exit_code(self, tmp_path):
         repo = _scan_dir(tmp_path)

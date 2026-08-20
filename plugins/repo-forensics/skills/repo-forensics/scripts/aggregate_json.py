@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 VALID_EXIT_CODES = {0, 1, 2}
 
-# Verdict tiers by confidence (KTD-7 / R4). These shape messaging and the
+# Verdict tiers by confidence (KTD-7). These shape messaging and the
 # adjudication flow only; severity still drives the 0/1/2/99 exit code.
 # SUPPRESSED is also assigned to any user-suppressed finding regardless of
 # its confidence.
@@ -186,6 +186,14 @@ def apply_suppressions(all_findings, repo_path):
     active = []
     suppressed = []
     critical_rules_suppressed = set()
+    # Calibration: only CRITICAL-rule suppression and MASS suppression are
+    # guarded. A scoped `rule:<id>:<glob>` suppression of a high/medium finding
+    # is a SUPPORTED feature (a first-party repo silencing a known-benign match
+    # in its own tree); re-emitting a same-severity guard for it made every
+    # legitimate scoped suppression a no-op. The exploit it was aimed at —
+    # hiding a critical — is already blocked by the critical-rule guard below,
+    # and every suppressed finding stays visible under the report's
+    # `suppressed` key regardless of tier.
 
     for finding in all_findings:
         rule_id = finding.get("rule_id", "") or ""
@@ -336,6 +344,11 @@ _UNSUPPORTED_COVERAGE_CATEGORIES = {
 }
 
 _INCOMPLETE_COVERAGE_CATEGORIES = {
+    # An oversized file is only head/tail sampled (1 MB each end), so
+    # the middle is UNINSPECTED. It was not registered as a coverage category at
+    # all, which let a payload padded past the 10 MB walk cap report
+    # coverage=COMPLETE and exit 0.
+    "oversized-file",
     "archive-scan-incomplete",
     "decode-scan-incomplete",
     "decode-max-depth",
@@ -349,6 +362,66 @@ _INCOMPLETE_COVERAGE_CATEGORIES = {
 # Prefix shorthands so the registry is closed under future scanner additions.
 _COVERAGE_UNSUPPORTED_PREFIXES = ("unsupported-", "opaque-")
 _COVERAGE_INCOMPLETE_SUFFIXES = ("-incomplete", "-max-depth")
+
+# Coverage gaps that sit over an EXECUTABLE / LOADABLE / ARCHIVE / ENCODED
+# artifact. A gap here is not a benign "we skipped a README": something that can
+# run or unpack was left uninspected, and the report must not be able to say
+# exit 0 over it. Everything else (provenance-unchecked, offline feeds,
+# generic scan-incomplete) stays purely informational.
+_BLOCKING_COVERAGE_CATEGORIES = {
+    "unsupported-archive-type",
+    "opaque-archive",
+    "archive-scan-incomplete",
+    "unanalyzable-bytecode",
+    "opaque-bytecode-with-source",
+    "decode-max-depth",
+    "decode-scan-incomplete",
+    "unsupported-file-type",
+    "oversized-file",
+}
+
+
+def build_coverage_gap_findings(coverage_status):
+    """Turn blocking coverage gaps into visible MEDIUM findings.
+
+    `calculate_report_exit_code` reads only the severity summary, so a coverage
+    gap could never influence the exit code no matter how loud coverage_status
+    was. Emitting a real finding per (scanner, category) blocking gap floors the
+    exit code at 1 through the existing contract — no second exit-code path to
+    keep in sync — and makes the uninspected surface visible in the findings
+    list rather than only in an additive status block.
+
+    MEDIUM, not HIGH: an uninspected indirection is a KNOWN UNKNOWN (review
+    required), not a confirmed payload.
+    """
+    findings = []
+    seen = set()
+    for gap in coverage_status.get("gaps", []):
+        category = gap.get("category", "")
+        if category not in _BLOCKING_COVERAGE_CATEGORIES:
+            continue
+        key = (gap.get("scanner", ""), category)
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append({
+            "scanner": "meta",
+            "severity": "medium",
+            "title": "Uninspected executable indirection",
+            "description": (
+                f"The {gap.get('scanner', '?')} scanner could not fully inspect "
+                f"a runnable/loadable/encoded artifact ({category}): "
+                f"{gap.get('reason', '')} Contents behind this gap were never "
+                f"analysed, so a clean verdict cannot be claimed over them."
+            ),
+            "file": "", "line": 0,
+            "snippet": category,
+            "category": "coverage-gap",
+            "rule_id": "", "confidence": 0.60,
+            "evidence_class": "direct",
+        })
+    return findings
+
 
 # Scanners that do not follow the per-file scan_file contract and whose own
 # finding categories are not coverage-honesty signals. They are still marked
@@ -378,9 +451,14 @@ def _coverage_status_for_category(category):
 def build_coverage_status(scanners, all_findings):
     """Aggregate per-scanner coverage honesty into a report-level coverage_status.
 
-    coverage_status is purely additive: it never changes exit_code, summary, or
-    the findings list. It reports COMPLETE/INCOMPLETE/UNSUPPORTED per scanner and
-    overall, with a gaps[] list of (scanner, category, human_reason).
+    coverage_status itself is a pure report: it reports COMPLETE/INCOMPLETE/
+    UNSUPPORTED per scanner and overall, with a gaps[] list of (scanner,
+    category, human_reason), and never mutates a scanner finding.
+
+    It is NOT inert, though: build_report feeds the gaps through
+    build_coverage_gap_findings(), so a gap over a runnable/loadable/encoded
+    artifact becomes a MEDIUM finding and floors the exit code at 1.
+    Gaps outside _BLOCKING_COVERAGE_CATEGORIES stay informational.
 
     Args:
         scanners: the per-run scanner info list from load_scanner_results().
@@ -701,8 +779,15 @@ def apply_evidence_caps(all_findings):
     only when a cap was applied) so the report is auditable: a reader can see
     what the scanner originally claimed and what the evidence model allowed.
 
+    NO SILENT CAP: capping a critical/high was the last demotion path
+    that left no trace of its own (suppression re-emits a guard, capability
+    declarations are annotation-only). Every such demotion now appends one
+    aggregated `meta` guard finding naming what was demoted, so a reader can
+    always see that a real finding was graded down and why.
+
     Operates in-place on dict findings. Returns all_findings for chaining.
     """
+    demoted = []
     for f in all_findings:
         ec = f.get("evidence_class", "")
         if ec not in ("inferred", "structural"):
@@ -717,6 +802,37 @@ def apply_evidence_caps(all_findings):
             conf = f.get("confidence")
             if conf is None or float(conf) > _SEVERITY_CONFIDENCE["low"]:
                 f["confidence"] = _SEVERITY_CONFIDENCE["low"]
+            if sev in ("critical", "high"):
+                demoted.append((sev, ec, f.get("file", ""),
+                                f.get("rule_id", "") or f.get("title", "")))
+
+    if demoted:
+        listing = "; ".join(
+            f"{sev} {ident or '?'} in {path or '?'} ({ec})"
+            for sev, ec, path, ident in demoted[:10])
+        more = f" (+{len(demoted) - 10} more)" if len(demoted) > 10 else ""
+        all_findings.append({
+            "scanner": "meta",
+            # LOW on purpose: the evidence model exists so prose that MENTIONS
+            # a dangerous pattern does not drive the exit code, and this guard
+            # fires on every such mention. Its job is visibility, not the
+            # verdict — the exploitable demotion paths (attacker-chosen folder
+            # and archive-member names) are closed at the source, in
+            # _context_gate and scan_archive.
+            "severity": "low",
+            "title": "Evidence model capped a critical/high finding",
+            "description": (
+                f"{len(demoted)} finding(s) were graded down to LOW because "
+                f"their evidence class is inferred/structural (prose, comment, "
+                f"or structure-only signal) rather than direct executable "
+                f"evidence. Review each: {listing}{more}."
+            ),
+            "file": "", "line": 0,
+            "snippet": f"{len(demoted)} evidence-capped finding(s)",
+            "category": "configuration",
+            "rule_id": "", "confidence": _SEVERITY_CONFIDENCE["low"],
+            "evidence_class": "direct",
+        })
     return all_findings
 
 
@@ -904,6 +1020,19 @@ def build_report(tmpdir, repo_path, skill_scan):
     # (critical-rule suppression, mass suppression) are added to the active set.
     all_findings, suppressed_findings = apply_suppressions(all_findings, repo_path)
 
+    # Path-glob .forensicsignore suppression is INVISIBLE to apply_suppressions:
+    # globs are consumed silently inside each scanner's walk_repo, so the hidden
+    # findings never exist to partition. Surface them here as live meta findings
+    # so a broad suppressor (`*`, `skills/`, `*.[s]h`) becomes a CRITICAL that
+    # drives exit 2, and any path-glob ignore leaves a counted, visible trace.
+    # Without this wiring a planted .forensicsignore silently zeroes the report
+    # (warn_forensicsignore was previously never called by any scan path).
+    try:
+        import forensics_core as _core_ign
+        all_findings.extend(f.to_dict() for f in _core_ign.warn_forensicsignore(repo_path))
+    except (ImportError, OSError) as e:
+        print(f"[!] .forensicsignore warning skipped: {e}", file=sys.stderr)
+
     # Mark WARN-tier (non-correlation) findings for LLM adjudication (U8).
     # Additive per-finding flag; does not touch severity counts or exit code.
     mark_adjudication(all_findings)
@@ -925,13 +1054,21 @@ def build_report(tmpdir, repo_path, skill_scan):
         all_findings, repo_path
     )
 
+    # Coverage-honesty gate. coverage_status is computed BEFORE the
+    # summary so a blocking gap — an unopened .7z, a zip nested past MAX_DEPTH,
+    # a .pyc padded past the size cap, base64 nested past the decode limit, the
+    # unsampled middle of an oversized file — becomes a real MEDIUM finding and
+    # therefore floors the exit code at 1. Previously each of these emitted only
+    # a LOW note and the report exited 0 over a live, uninspected payload.
+    coverage_status = build_coverage_status(scanners, all_findings)
+    all_findings.extend(build_coverage_gap_findings(coverage_status))
+
     all_findings.sort(key=lambda item: -SEVERITY_ORDER.get(item.get("severity", "low"), 0))
     summary = build_summary(all_findings)
     verdicts = build_verdicts(all_findings, suppressed_findings)
     exit_code = calculate_report_exit_code(summary, scanners)
 
-    # Purely additive coverage/enrichment verdicts.
-    coverage_status = build_coverage_status(scanners, all_findings)
+    # Purely additive enrichment verdicts.
     core_verdict = build_core_verdict(summary, verdicts, exit_code)
     enrichment_status = build_enrichment_status(scanners, all_findings)
 

@@ -318,8 +318,7 @@ def scan_tool_shadowing(content, rel_path):
     findings = []
     lines = content.split('\n')
     for i, line in enumerate(lines):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for rule in TOOL_SHADOWING_RULES:
             if rule.regex.search(line):
                 findings.append(core.Finding(

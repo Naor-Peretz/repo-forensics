@@ -32,6 +32,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import forensics_core as core
 import scan_sast
+import scan_secrets
 
 SCANNER_NAME = "oversize"
 
@@ -60,11 +61,17 @@ _WS_RUN_RE = re.compile(rb"[ \t\r\n\x0b\x0c]+")
 
 
 def _scan_text_blob(text, rel_path, ext):
-    """Run the shared SAST + trifecta patterns over an in-memory text blob and
-    return the combined findings (re-pathed to rel_path)."""
+    """Run the shared SAST + trifecta + secret patterns over an in-memory text
+    blob and return the combined findings (re-pathed to rel_path).
+
+    Secrets are included because the regions this scanner reaches — an oversized
+    file's head/tail, the non-whitespace part of an inflated file, the tail of
+    an over-long line — are exactly where a plaintext credential hides from the
+    line-bounded scanners."""
     findings = []
     findings.extend(scan_sast.scan_text(text, rel_path, ext=ext))
     findings.extend(core.scan_text_trifecta(text, rel_path))
+    findings.extend(scan_secrets.scan_text(text, rel_path))
     return findings
 
 
@@ -85,7 +92,7 @@ def _read_window(file_path, size, from_end=False):
 def scan_oversized_file(file_path, rel_path):
     """Emit the oversized-file note and scan head+tail windows."""
     findings = []
-    ext = os.path.splitext(file_path)[1].lower()
+    ext = core.normalized_ext(file_path)
     try:
         size = os.path.getsize(file_path)
     except OSError:
@@ -135,7 +142,7 @@ def scan_whitespace_inflation(file_path, rel_path):
     regions. Bounded by WHITESPACE_READ_CAP so an arbitrarily large file cannot
     drive an unbounded read."""
     findings = []
-    ext = os.path.splitext(file_path)[1].lower()
+    ext = core.normalized_ext(file_path)
     try:
         with open(file_path, "rb") as f:
             data = f.read(WHITESPACE_READ_CAP)
@@ -180,6 +187,65 @@ def scan_whitespace_inflation(file_path, rel_path):
     return findings
 
 
+# Over-long lines: how much of the tail past core.MAX_LINE_LENGTH to sweep, in
+# windows of MAX_LINE_LENGTH each. Bounded so a single 500 MB minified bundle
+# cannot blow the wall-clock budget.
+LONG_LINE_MAX_WINDOWS = 64
+LONG_LINE_READ_CAP = 8 * 1024 * 1024
+
+
+def scan_long_lines(file_path, rel_path):
+    """Scan the TAIL of over-long lines that the shared scanners cannot reach.
+
+    Every line-based scanner bounds regex work at core.MAX_LINE_LENGTH. That
+    bound is now a truncation rather than a skip, which recovers a
+    payload in the first 10k characters — but a payload parked AFTER 10k
+    characters of inert padding, all on one line, is still past the cut. This
+    scanner sweeps that tail in bounded windows so the padding trick buys
+    nothing. Non-whitespace padding is what makes this distinct from
+    scan_whitespace_inflation, which only collapses whitespace runs.
+    """
+    findings = []
+    ext = core.normalized_ext(file_path)
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            data = f.read(LONG_LINE_READ_CAP)
+    except OSError:
+        return findings
+
+    limit = core.MAX_LINE_LENGTH
+    windows = 0
+    for line_no, line in enumerate(data.split("\n"), start=1):
+        if len(line) <= limit:
+            continue
+        pos = limit
+        while pos < len(line) and windows < LONG_LINE_MAX_WINDOWS:
+            chunk = line[pos:pos + limit]
+            windows += 1
+            pos += limit
+            for f_ in _scan_text_blob(chunk, rel_path, ext):
+                f_.line = line_no
+                f_.description = (
+                    "Found past the " + str(limit) + "-character line bound, "
+                    "where the shared scanners stop reading. " + f_.description)
+                findings.append(f_)
+        if windows >= LONG_LINE_MAX_WINDOWS:
+            findings.append(core.Finding(
+                scanner=SCANNER_NAME, severity="low",
+                title="Over-long line only partially scanned",
+                description=(
+                    "A line exceeds the "
+                    + str(limit * LONG_LINE_MAX_WINDOWS)
+                    + "-character sweep budget; the remainder was not read."
+                ),
+                file=rel_path, line=line_no,
+                snippet=f"line {line_no}: {len(line)} chars",
+                category="scan-incomplete",
+            ))
+            break
+    return findings
+
+
 def scan_repo(repo_path, ignore_patterns=None):
     """Scan a repo for oversized files and whitespace inflation."""
     all_findings = []
@@ -209,6 +275,8 @@ def scan_repo(repo_path, ignore_patterns=None):
             all_findings.extend(scan_oversized_file(file_path, rel_path))
         # Whitespace inflation can hide under the cap too — always check.
         all_findings.extend(scan_whitespace_inflation(file_path, rel_path))
+        # Over-long lines hide a payload past the per-line regex bound.
+        all_findings.extend(scan_long_lines(file_path, rel_path))
 
     return all_findings
 

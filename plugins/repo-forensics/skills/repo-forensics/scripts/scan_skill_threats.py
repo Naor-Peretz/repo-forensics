@@ -381,7 +381,7 @@ def scan_unicode_smuggling(content, rel_path):
             category="unicode-smuggling"
         ))
 
-    ext = os.path.splitext(rel_path)[1].lower()
+    ext = core.normalized_ext(rel_path)
     if ext in UNICODE_CODE_EXTS:
         # C1 control characters in source code
         m = C1_CONTROL_PATTERN.search(content)
@@ -444,8 +444,7 @@ def scan_known_iocs(content, rel_path):
     c2_ips, malicious_domains = _get_ioc_lists()
 
     for i, line in enumerate(lines):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for ip in c2_ips:
             if ip in line:
                 findings.append(core.Finding(
@@ -514,13 +513,12 @@ HEX_SPACED_RE = re.compile(r'(?:[0-9a-fA-F]{2}\s){7,}[0-9a-fA-F]{2}')
 
 def scan_morse_encoding(content, rel_path):
     """Category 16: Detect Morse code sequences in documentation files."""
-    ext = os.path.splitext(rel_path)[1].lower()
+    ext = core.normalized_ext(rel_path)
     if ext not in {'.md', '.txt', '.rst', '.adoc'}:
         return []
     findings = []
     for i, line in enumerate(content.split('\n')):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         m = MORSE_SEQUENCE_RE.search(line)
         if not m:
             continue
@@ -544,13 +542,12 @@ def scan_morse_encoding(content, rel_path):
 
 def scan_hex_encoding(content, rel_path):
     """Category 17: Detect hex-encoded strings in documentation files."""
-    ext = os.path.splitext(rel_path)[1].lower()
+    ext = core.normalized_ext(rel_path)
     if ext not in {'.md', '.txt', '.rst', '.adoc'}:
         return []
     findings = []
     for i, line in enumerate(content.split('\n')):
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for pattern in (HEX_PAIR_RE, HEX_SPACED_RE):
             m = pattern.search(line)
             if not m:
@@ -610,7 +607,14 @@ def _mh_gate_demotes(finding, rel_path, content):
     error, which maps to not-demoting (the loud direction)."""
     try:
         fctx = _context_gate.classify_file_context(rel_path, content)
-        if fctx.is_test_fixture:
+        # A test-fixture context demotes only a NON-agent-readable
+        # carrier. An exfil directive sitting in `fixtures/helper.py` or
+        # `tests/test_x.py` is still code an agent ingests and acts on — the
+        # same reasoning that already exempted code COMMENTS from demotion.
+        # The path is chosen by the scanned repo, so letting a folder name
+        # grade a directive re-opened the hole the design deliberately closed.
+        if fctx.is_test_fixture and fctx.primary not in (
+                "code", "config", "agent-instruction"):
             return True
         # is_security_doc is basename-stem based (security/privacy) and
         # extension-INDEPENDENT. Only demote when the carrier is actually a
@@ -623,7 +627,13 @@ def _mh_gate_demotes(finding, rel_path, content):
             parts = _context_gate._normalize_parts(rel_path)[0]
             if any(seg in core._DOC_PATH_SEGMENTS for seg in parts):
                 return True
-        if fctx.primary in ("prose-doc", "agent-instruction"):
+        # Fenced-code demotion applies to PROSE docs only. Agents act on
+        # fenced blocks inside CLAUDE.md / SKILL.md / AGENTS.md — a ``` fence
+        # there is an instruction to follow, not a sample to read, so it must
+        # stay direct.
+        if (fctx.primary == "prose-doc"
+                and os.path.basename(rel_path).upper()
+                not in core._AGENT_INSTRUCTION_BASENAMES):
             lctx = _context_gate.classify_line_context(rel_path, content, finding.line)
             if lctx == "fenced-code":
                 return True
@@ -663,10 +673,13 @@ def scan_content(content, rel_path, budget=None):
     findings = []
 
     # Only scan markdown/text files for prompt injection and stealth directives
-    ext = os.path.splitext(rel_path)[1].lower()
+    ext = core.normalized_ext(rel_path)
     text_exts = {'.md', '.txt', '.yml', '.yaml', '.toml', '.cfg', '.ini', '.json', ''}
-    code_exts = {'.py', '.js', '.ts', '.jsx', '.tsx', '.rb', '.sh', '.bash', '.zsh',
-                 '.go', '.rs', '.php', '.java', '.swift', '.kt'}
+    # The canonical code-extension set, not a hand-kept local copy. The
+    # local list was missing .mjs/.cjs/.ps1/.bat/.vbs/.lua/.pl and friends, so
+    # renaming a payload `.js` -> `.mjs` skipped the ENTIRE prompt-injection +
+    # memory-heist layer on a file that still executes.
+    code_exts = core._CODE_EXTS
 
     # AI agent instruction files: treat like SKILL.MD for prompt injection + exfiltration + persistence.
     # Use core's canonical set so the scanner and the evidence-class layer agree
@@ -839,8 +852,7 @@ def _scan_authority_framing(content, rel_path):
             continue
         if in_code_fence:
             continue
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
         for rule in _ALL_AUTHORITY_RULES:
             if rule.regex.search(line):
                 findings.append(core.Finding(
@@ -878,7 +890,7 @@ def _scan_prose_imperatives(content, rel_path):
     )
     agent_config_exts = {'.toml', '.yml', '.yaml', '.json', '.ini', '.cfg'}
     if not is_agent_file:
-        ext = os.path.splitext(rel_path)[1].lower()
+        ext = core.normalized_ext(rel_path)
         if ext in agent_config_exts:
             is_agent_file = True
     for i, line in enumerate(lines):
@@ -888,8 +900,7 @@ def _scan_prose_imperatives(content, rel_path):
             continue
         if in_code_fence:
             continue
-        if len(line) > core.MAX_LINE_LENGTH:
-            continue
+        line = core.clip_line(line)
 
         url_match = re.search(r'https?://(\S+)', line)
         if not url_match:

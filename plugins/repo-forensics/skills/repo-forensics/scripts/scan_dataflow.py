@@ -112,9 +112,9 @@ def analyze_file(file_path, rel_path):
         line_stripped = line.strip()
         line_no = i + 1
 
-        # Skip extremely long lines to prevent regex backtracking
-        if len(line_stripped) > core.MAX_LINE_LENGTH:
-            continue
+        # Bound regex backtracking by TRUNCATING, never skipping: dropping the
+        # line entirely lets a payload hide behind 10k characters of padding.
+        line_stripped = core.clip_line(line_stripped)
 
         # Check if line introduces a tainted source
         for source_pat, source_desc in sources:
@@ -164,7 +164,7 @@ def build_import_graph(repo_path, ignore_patterns):
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 # Filter mega-lines to prevent O(n^2) regex backtracking
-                content = ''.join(line for line in f if len(line) <= core.MAX_LINE_LENGTH)
+                content = ''.join(core.clip_line(line) for line in f)
         except (OSError, UnicodeDecodeError):
             continue
 
@@ -206,7 +206,7 @@ def main():
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 # Filter mega-lines to prevent O(n^2) regex backtracking
-                content = ''.join(line for line in f if len(line) <= core.MAX_LINE_LENGTH)
+                content = ''.join(core.clip_line(line) for line in f)
         except (OSError, UnicodeDecodeError):
             continue
 
@@ -228,7 +228,7 @@ def main():
                 try:
                     with open(file_path_full, 'r', encoding='utf-8', errors='ignore') as f:
                         # Filter mega-lines to prevent O(n^2) regex backtracking
-                        content = ''.join(line for line in f if len(line) <= core.MAX_LINE_LENGTH)
+                        content = ''.join(core.clip_line(line) for line in f)
                 except (OSError, UnicodeDecodeError):
                     continue
 

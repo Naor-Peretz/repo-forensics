@@ -111,6 +111,240 @@ _DOC_BASENAMES = {
 # Path segments that identify documentation directories.
 _DOC_PATH_SEGMENTS = {"docs", "doc", "documentation"}
 
+# Executable / interpreted source extensions. A file with one of these RUNS
+# regardless of the directory it lives in or its basename, so it is never
+# documentation for evidence purposes. This is the CANONICAL set: _context_gate
+# aliases to it (`_CODE_EXTS = core._CODE_EXTS`) so the two evidence engines can
+# never drift — the drift is exactly what shipped the docs/helper.py and
+# readme.php suppression bypasses. Includes web-executable carriers
+# (.php/.jsp/.asp/.hta/.cgi) a web server runs from any folder.
+_CODE_EXTS = {
+    ".py", ".pyw", ".pyi",
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+    ".rb", ".go", ".rs",
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd",
+    ".php", ".phtml", ".pl", ".pm", ".psgi", ".cgi",
+    ".java", ".kt", ".kts", ".scala", ".groovy",
+    ".cs", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+    ".swift", ".lua", ".r", ".jl", ".dart", ".ex", ".exs",
+    ".vbs", ".hta", ".jsp", ".jspx", ".asp", ".aspx",
+    # Shell carriers folded in from _SHELL_CARRIER_EXTS so every engine + the
+    # doc-carrier agree these EXECUTE (a folder name must never grade them down
+    # while _is_comment_or_string treats them as never-inert). Additive only.
+    ".ksh", ".command", ".bashrc", ".profile",
+    # Additional executable/interpreted carriers a runner executes from any
+    # folder: Gradle build scripts, AppleScript/OSA, Windows Script Host,
+    # AWK, AutoHotkey, and Nmap NSE scripts.
+    ".gradle", ".scpt", ".applescript", ".osascript", ".wsf", ".awk",
+    ".ahk", ".nse",
+}
+
+# Operational-data (config) extensions. A live miner/exfil config is data, not
+# prose, so the basename/path-segment doc heuristics must NOT demote it either
+# (a payload in docs/config.json is still operational). Canonical; the gate
+# aliases to it.
+_CONFIG_EXTS = {
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml",
+    ".csv", ".env", ".properties", ".lock",
+}
+
+# Extensionless files that are executable/build code, never prose — so a docs/
+# path segment must not demote them (Makefile/Dockerfile under docs/ still run).
+# Stems are compared lowercase.
+_CODE_BASENAMES = {
+    "makefile", "gnumakefile", "dockerfile", "containerfile", "jenkinsfile",
+    "vagrantfile", "rakefile", "gemfile", "guardfile", "capfile", "berksfile",
+    "brewfile", "procfile", "thorfile", "appfile", "fastfile", "podfile",
+    "configure", "meson", "bsconfig", "justfile", "earthfile", "taskfile",
+}
+
+
+# Shebang interpreters that mark an extensionless / unknown-extension file as
+# executable code. CANONICAL: _context_gate aliases these so the two evidence
+# engines classify a dropped stager identically.
+_SHEBANG_INTERPRETERS = (
+    "sh", "bash", "zsh", "ksh", "fish", "python", "python2", "python3",
+    "perl", "ruby", "php", "node", "pwsh", "powershell", "osascript", "expect",
+)
+_SHEBANG_RE = re.compile(r"^#!\s*(?:/usr/bin/env\s+)?(\S+)")
+
+
+def _shebang_is_code(text):
+    """True if line 1 of `text` is a #! shebang for a known interpreter.
+
+    Used to fail CLOSED on extensionless files: `docs/installer` carrying
+    `#!/bin/bash` is a script, not prose, and must never be demoted by its
+    folder or basename. Accepts str or bytes; never raises."""
+    if not text:
+        return False
+    try:
+        if isinstance(text, (bytes, bytearray)):
+            text = bytes(text[:512]).decode("utf-8", errors="replace")
+        first = text.split("\n", 1)[0]
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return False
+    m = _SHEBANG_RE.match(first)
+    if not m:
+        return False
+    interp = m.group(1).lower()
+    return (os.path.basename(interp) in _SHEBANG_INTERPRETERS
+            or interp in _SHEBANG_INTERPRETERS)
+
+
+def _is_doc_carrier(ext, stem, parts, content=None):
+    """CANONICAL doc-carrier signal, shared by forensics_core and _context_gate.
+
+    Fails CLOSED on unknown extensions (design: a security scanner must not
+    demote what it cannot prove is prose):
+      1. doc EXTENSION (.md/.rst/.txt/...) -> documentation anywhere. A doc
+         extension is the ONLY thing that earns demotion by name/location.
+      2. ANY non-empty, non-doc extension -> NEVER documentation. This includes
+         known code/config AND unknown extensions (.command/.gradle/.tcl/.ipynb/
+         .sql/...). The code allowlist can never be complete, so "unknown
+         extension" must not default to doc-eligible — that fail-OPEN default is
+         exactly what let docs/payload.command demote to LOW / exit 0.
+      3. empty extension only -> fails CLOSED. A known code/build basename
+         (Makefile, Dockerfile, configure, ...) is code; a shebang in `content`
+         (when the caller has it) is code. A doc BASENAME (readme, license, ...)
+         demotes ONLY when the caller supplied CONTENT that is not a shebang
+         script: a genuinely-prose README almost always carries a .md/.txt
+         extension, so on the CONTENT-LESS path (infer_evidence_class passes
+         content=None) an extensionless `readme`/`license` does NOT demote by
+         basename alone — an extensionless SCRIPT named `readme` is the attack.
+         A bare `docs/` path segment NO LONGER
+         demotes an extensionless file on its own: `docs/install`,
+         `docs/bootstrap` and friends are routinely executable, and an
+         allowlist of code basenames can never be complete — the same
+         fail-OPEN default F1 was meant to kill.
+
+    Keying on what the content EXECUTES rather than where it sits (or its name)
+    is the fix for the whole suppression-bypass class. _context_gate's
+    _is_doc_carrier delegates here so both engines decide identically; parity
+    AND correctness tests (test_evidence_engine_parity.py) guard it.
+    """
+    if ext in _DOC_EXTS:
+        return True
+    if ext:
+        # Non-empty, non-doc extension (known or unknown) -> not prose.
+        return False
+    # Extensionless files only. Order matters: the content/shebang code-check
+    # runs BEFORE any name-based demotion so `docs/installer` (#!/bin/bash) is
+    # code in both engines.
+    if stem in _CODE_BASENAMES:
+        return False
+    if content is not None and _shebang_is_code(content):
+        return False
+    # Doc BASENAME demotion requires CONTENT we can inspect. On the content-less
+    # path (infer_evidence_class -> _is_doc_file(content=None)) an extensionless
+    # `readme`/`license`/`changelog`/... is NOT provably prose — a genuinely
+    # prose README carries a .md/.txt extension, while an extensionless script
+    # named `readme` is exactly the suppression-bypass attack. Fail CLOSED: only
+    # demote by doc basename when the caller gave us content and it is not a
+    # shebang script (verified just above).
+    if content is not None and stem in _DOC_BASENAMES:
+        return True
+    # Unknown / content-less extensionless file: NOT provably prose -> stay loud.
+    del parts
+    return False
+
+
+def _normalize_path_parts(rel_path):
+    """Lowercased path segments with '.'/'..' (and empty segments) collapsed.
+
+    A demoting segment the path has ESCAPED ('x/docs/../installer') must not
+    fire the docs/ heuristic. Shared with _context_gate._normalize_parts so both
+    engines agree on '..' paths — the un-collapsed split in this engine let an
+    attacker-chosen archive-member name like 'docs/../installer' misreport a
+    real critical finding as LOW."""
+    if not rel_path:
+        return []
+    norm = rel_path.replace("\\", "/").lower()
+    parts = []
+    for p in norm.split("/"):
+        if not p or p == ".":
+            continue
+        if p == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(p)
+    return parts
+
+
+# Near-identical language variants. A scanner's rule pack is keyed by one
+# extension per language family; these aliases route the variants to it so a
+# payload cannot dodge an entire ruleset by renaming `.js` -> `.mjs`.
+_EXT_ALIASES = {
+    ".mjs": ".js", ".cjs": ".js",
+    ".pyw": ".py", ".pyi": ".py",
+    ".bash": ".sh", ".zsh": ".sh", ".ksh": ".sh", ".fish": ".sh",
+    ".phtml": ".php", ".php3": ".php", ".php4": ".php", ".php5": ".php",
+    ".mts": ".ts", ".cts": ".ts",
+    ".rake": ".rb", ".gemspec": ".rb",
+    ".psm1": ".ps1", ".psd1": ".ps1",
+    ".kt": ".java", ".kts": ".java", ".groovy": ".java",
+}
+
+# Characters Windows silently strips from the END of a filename when opening or
+# executing it. `evil.py ` and `evil.py.` both run as `evil.py`, but
+# os.path.splitext reports `".py "` / `"."` — neither is in any allowlist, so an
+# extension-gated scanner skipped its ENTIRE ruleset for a file that still runs.
+_EXT_TRAILING_JUNK = " .\t\r\n\x0b\x0c\u00a0"
+
+
+def normalized_ext(path):
+    """Lowercased extension of `path`, canonicalized for allowlist lookups.
+
+    Trailing dots/spaces are stripped from the BASENAME first (see
+    _EXT_TRAILING_JUNK). Backslashes are normalized so Windows paths split
+    correctly on POSIX. Returns "" when there is no extension."""
+    if not path:
+        return ""
+    base = os.path.basename(str(path).replace("\\", "/"))
+    base = base.rstrip(_EXT_TRAILING_JUNK)
+    if not base:
+        return ""
+    return os.path.splitext(base)[1].lower()
+
+
+def resolve_scan_ext(path, supported):
+    """Return the extension key a scanner should use for `path`, or "" if the
+    scanner does not cover it.
+
+    Single source of truth for every scanner's scannable-code gate: normalizes
+    the trailing-dot/space bypass, then resolves language variants through
+    _EXT_ALIASES so `.mjs`/`.cjs`/`.pyw`/`.phtml` reach the pack rules for their
+    family instead of falling off the allowlist entirely."""
+    ext = normalized_ext(path)
+    if not ext:
+        return ""
+    if ext in supported:
+        return ext
+    alias = _EXT_ALIASES.get(ext)
+    if alias and alias in supported:
+        return alias
+    return ""
+
+
+def clip_line(line):
+    """Truncate an over-long line to MAX_LINE_LENGTH (the ReDoS bound) while
+    preserving a trailing newline so line numbering is unaffected.
+
+    Scanners must TRUNCATE, never `continue`: skipping the line lets an attacker
+    blind every text detector at once by emitting the payload plus 10k
+    characters of padding on a single line."""
+    if len(line) <= MAX_LINE_LENGTH:
+        return line
+    return line[:MAX_LINE_LENGTH] + ("\n" if line.endswith("\n") else "")
+
+
+def _is_code_file(file_path):
+    """Return True if the extension marks the file as executable/interpreted
+    source. Retained for callers that only need the code-vs-not test."""
+    if not file_path:
+        return False
+    return normalized_ext(file_path) in _CODE_EXTS
+
 # Comment-line prefixes. A left-stripped snippet beginning with one of these
 # is a comment, not executable code.
 _COMMENT_PREFIXES = ("#", "//", ";;", "/*", "*", "--", ";", "<!--", "//!", "///")
@@ -144,23 +378,79 @@ _LOG_CALL_RE = re.compile(
 # inside a string literal, not an executable statement.
 _QUOTE_CHARS = ("'", '"', '`')
 
+# String-literal spans, and the punctuation allowed to surround pure string
+# arguments. Used to tell a log of a STRING (`log("os.system is risky")`,
+# demote) from a log WRAPPING code (`print(os.system(cmd))`, never demote — the
+# inner call executes before the log runs).
+# ESCAPE-AWARE string spans: a backslash-escaped quote (`\"`) does NOT close the
+# literal, so `"\""` is one span, not `"\"` + a stray quote. A non-escape-aware
+# regex mis-split `"\""+os.system('id')` and left EMPTY residue, laundering an
+# executing os.system() call down to a "pure string" (exit 2 -> 0).
+_STRING_SPAN_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`")
+_LOG_ARG_ALLOWED_RE = re.compile(r"^[()+,;\s]*$")
+# A snippet is capped at 120 chars, so a long literal can be cut mid-string. An
+# unterminated trailing quote is a truncation artifact, not code, and is dropped
+# before judging what is left over. The negative lookbehind is the second half
+# of the escaped-quote fix: the tail-strip fires only when the stray quote is at
+# the START of the residue or follows punctuation/whitespace — NEVER when an
+# identifier, `)` or `]` (i.e. real executing code) precedes it, so a laundered
+# `code"tail` is not silently reduced to an inert-looking prefix.
+_UNTERMINATED_TAIL_RE = re.compile(r"(?<![A-Za-z0-9_)\]])['\"`][^'\"`]*$")
 
-def _is_doc_file(file_path):
-    """Return True if the file path indicates a documentation file."""
+# Shell command substitution. `$(...)`, backticks and `${...}` EXECUTE inside a
+# double-quoted shell string, so a downloader wrapped in `echo "$( ... )"` is a
+# live command, not an inert message. The string-literal demotion is
+# Python-centric and read these as prose — an exit 2 -> 0 laundering path.
+_SHELL_SUBST_RE = re.compile(r"\$\(|\$\{|`")
+
+# Carriers where a quoted string is never reliably inert (word splitting, eval,
+# command substitution). Only the comment-prefix branch may demote in these.
+_SHELL_CARRIER_EXTS = {".sh", ".bash", ".zsh", ".ksh", ".fish", ".command",
+                       ".bashrc", ".profile"}
+
+
+def _snippet_is_pure_string(snip):
+    """True if `snip` is nothing but string literal(s) plus punctuation.
+
+    This is the rigor the quote-START check was missing: a snippet like
+    `"n"; x=open(...)` begins with a quote but is executable code carrying a
+    no-op string prefix, and demoting it laundered a critical to LOW."""
+    residue = _STRING_SPAN_RE.sub("", snip)
+    residue = _UNTERMINATED_TAIL_RE.sub("", residue)
+    return bool(_LOG_ARG_ALLOWED_RE.match(residue))
+
+
+def _log_arg_is_pure_string(rest):
+    """True if the text after a log/print call opener is only string literal(s)
+    and punctuation — i.e. a logged MESSAGE, not wrapped executable code."""
+    rest = rest.lstrip()
+    if rest.startswith('('):
+        rest = rest[1:].lstrip()
+    if rest[:1] not in _QUOTE_CHARS:
+        return False
+    return _snippet_is_pure_string(rest)
+
+
+def _is_doc_file(file_path, content=None):
+    """Return True if the file path indicates a documentation file.
+
+    Thin wrapper over the canonical _is_doc_carrier so this engine and the
+    _context_gate engine decide code-vs-doc identically. Normalizes Windows
+    backslashes BEFORE splitting so `docs\\shell.php` is seen as a code file on
+    POSIX too (os.path.basename does not split on "\\" off Windows). The
+    extension key is normalized (trailing dot/space) so `guide.md ` is still a
+    doc and `evil.py ` is still code.
+
+    `content` is optional; when a caller has the bytes it enables the shebang
+    code-check for extensionless files.
+    """
     if not file_path:
         return False
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext in _DOC_EXTS:
-        return True
-    lower = file_path.lower()
-    basename = os.path.basename(lower)
-    stem = os.path.splitext(basename)[0]
-    if stem in _DOC_BASENAMES:
-        return True
-    parts = lower.replace("\\", "/").split("/")
-    if any(seg in _DOC_PATH_SEGMENTS for seg in parts):
-        return True
-    return False
+    lower = file_path.replace("\\", "/").lower()
+    ext = normalized_ext(lower)
+    stem = os.path.splitext(os.path.basename(lower).rstrip(_EXT_TRAILING_JUNK))[0]
+    parts = _normalize_path_parts(file_path)
+    return _is_doc_carrier(ext, stem, parts, content=content)
 
 
 def _is_agent_instruction_file(file_path):
@@ -181,17 +471,38 @@ def _is_agent_instruction_file(file_path):
     return False
 
 
-def _is_comment_or_string(snippet):
+def _is_comment_or_string(snippet, ext=""):
     """Return True if the snippet is a comment, a quoted string literal, or
-    a log/print/warn/echo message rather than an executable statement."""
+    a log/print/warn/echo message rather than an executable statement.
+
+    `ext` is the carrier's normalized extension when the caller knows it. In a
+    shell carrier only the comment branch may demote: a quoted shell string is
+    not inert (word splitting, eval, command substitution)."""
     if not snippet:
         return False
     snip = snippet.lstrip()
     if snip.startswith(_COMMENT_PREFIXES):
+        # A comment is inert in every language, including shell.
         return True
+    if _SHELL_SUBST_RE.search(snip):
+        # `$(...)` / backticks / `${...}` execute even inside double quotes.
+        return False
+    if ext in _SHELL_CARRIER_EXTS:
+        return False
     if snip.startswith(_QUOTE_CHARS):
-        return True
-    if _LOG_CALL_RE.search(snippet):
+        # Quote-START alone is not enough: the WHOLE snippet must be string
+        # literal(s) + punctuation, or executable code with a no-op string
+        # prefix launders itself down to LOW.
+        return _snippet_is_pure_string(snip)
+    # A log/print/echo call demotes ONLY when it appears at the START of the
+    # statement AND its argument is a pure string literal. `.match` (not
+    # `.search`) anchors at the statement start so a dangerous call that merely
+    # CONTAINS a log token (`os.system(print(x))`) is not laundered; the
+    # pure-string check stops `print(os.system(cmd))` — where the payload runs
+    # before the log call — from demoting to LOW. This closed an exit 2->0
+    # bypass on the sast/dataflow/correlation path.
+    m = _LOG_CALL_RE.match(snip)
+    if m and _log_arg_is_pure_string(snip[m.end():]):
         return True
     return False
 
@@ -229,7 +540,7 @@ def infer_evidence_class(scanner, category, file_path, snippet):
         # stays inferred. A non-directive scanner finding in documentation is
         # also prose.
         return "inferred"
-    if _is_comment_or_string(snippet):
+    if _is_comment_or_string(snippet, ext=normalized_ext(file_path)):
         # A directive scanner finding hidden in a code comment or string is
         # still an agent-readable directive (agents ingest file contents
         # including comments). Only non-directive scanners are demoted here.
@@ -350,9 +661,11 @@ def load_ignore_patterns(repo_path):
     """Loads PATH ignore patterns from a .forensicsignore file in the repo root.
 
     Backward compatible: returns the list of path-glob patterns used by the
-    file walk. `rule:<id>[:<glob>]` lines are per-finding suppression
-    directives (U1) handled separately by load_rule_suppressions() and are
-    deliberately excluded here so they never act as path globs.
+    file walk. `rule:<id>[:<glob>]` AND `suppress:<json>` lines are per-finding
+    suppression directives (U1) handled separately by load_rule_suppressions()
+    and are deliberately excluded here so they never act as path globs — a
+    `suppress:{...}` line was previously double-counted (once as a path glob,
+    once as a rule suppression) and fed to the walk as a bogus glob.
     """
     ignore_file = os.path.join(repo_path, '.forensicsignore')
     patterns = []
@@ -362,7 +675,9 @@ def load_ignore_patterns(repo_path):
             with open(ignore_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith('#') and not line.startswith('rule:'):
+                    if (line and not line.startswith('#')
+                            and not line.startswith('rule:')
+                            and not line.startswith('suppress:')):
                         patterns.append(line)
         except (OSError, UnicodeDecodeError) as e:
             print(f"[!] Warning: Could not read .forensicsignore: {e}", file=sys.stderr)
@@ -719,6 +1034,171 @@ DANGEROUS_IGNORE_PATTERNS = {
     '**/*.py', '**/*.js', '**/*.ts', '**/*.rb', '**/*.go',
 }
 
+# Representative source files spanning languages and source trees. A
+# .forensicsignore pattern is "dangerously broad" if it silently suppresses a
+# swath of these. Detection tests what a pattern MATCHES rather than its exact
+# spelling, so obfuscated equivalents of the denylist (character classes like
+# `*.[p]y`, single-star tree globs like `src/*`) are caught too — an exact
+# string set was blind to them. Sentinels are all files we never want silently
+# unscanned; legitimate narrow ignores (build/, vendor/, dist/**, a single
+# generated file) match none of them.
+_SOURCE_SENTINELS = (
+    "src/app.py", "src/app.js", "src/app.ts",
+    "lib/core.rb", "pkg/server.go", "app/main.rs",
+    "scripts/deploy.sh", "scripts/build.py", "scripts/lib/util.js",
+    "cmd/tool/main.go", "internal/db.go",
+    "server.py", "index.js", "Main.java",
+)
+
+# Sentinel hits are only a cheap PRE-FLIGHT (used when no repo walk is available,
+# e.g. an empty fixture). The authoritative broad-suppression signal is
+# coverage against the ACTUAL walk (dangerous_ignore_coverage) — a fixed
+# sentinel list is a guess at the file tree and misses whole real trees like
+# skills/ (a whole-tree suppression a fixed sentinel list misses).
+_BROAD_SENTINEL_THRESHOLD = 2
+
+# Walk-based thresholds. A pattern (or the ignore file in aggregate) is broad
+# when it suppresses this fraction of discovered source, OR this many absolute
+# source files via one pattern, OR 100% of any one present language.
+_BROAD_COVERAGE_RATIO = 0.25
+_BROAD_COVERAGE_ABS = 10
+
+# Trivial single-character class: [p] -> p, but NOT [!..], [a-z], or multi-char.
+_TRIVIAL_CHARCLASS_RE = re.compile(r"\[([^\]!^-])\]")
+
+
+def _expand_trivial_char_classes(pattern):
+    """Collapse needless single-char classes so char-class obfuscation of the
+    denylist (`*.[p]y` -> `*.py`, `s[r]c/*` -> `src/*`) is caught by the literal
+    membership pre-flight. Leaves real classes/ranges (`[a-z]`, `[!x]`) intact."""
+    prev = None
+    out = pattern
+    # Iterate to collapse adjacent/multiple single-char classes.
+    while out != prev:
+        prev = out
+        out = _TRIVIAL_CHARCLASS_RE.sub(r"\1", out)
+    return out
+
+
+def _is_dangerously_broad_pattern(pattern):
+    """Cheap, walk-free pre-flight: True if a pattern is a known broad
+    suppressor by literal membership (including trivial char-class obfuscation)
+    or matches >= _BROAD_SENTINEL_THRESHOLD source sentinels. This is NOT the
+    authoritative check — dangerous_ignore_coverage() measures the real walk and
+    catches whole-tree suppressors the sentinels miss. Kept for empty-fixture
+    callers and as a fast path."""
+    if pattern in DANGEROUS_IGNORE_PATTERNS:
+        return True
+    if _expand_trivial_char_classes(pattern) in DANGEROUS_IGNORE_PATTERNS:
+        return True
+    hits = 0
+    for sentinel in _SOURCE_SENTINELS:
+        if pattern.endswith('/'):
+            if sentinel.startswith(pattern) or sentinel == pattern[:-1]:
+                hits += 1
+                continue
+        if fnmatch.fnmatch(sentinel, pattern):
+            hits += 1
+            continue
+        if '*' not in pattern and '?' not in pattern and '[' not in pattern:
+            if sentinel.startswith(pattern + '/') or sentinel == pattern:
+                hits += 1
+        if hits >= _BROAD_SENTINEL_THRESHOLD:
+            return True
+    return hits >= _BROAD_SENTINEL_THRESHOLD
+
+
+def _is_scannable_source(rel_path):
+    """True if a file would carry real findings (so silently ignoring it hides
+    detections). Must count EVERY file the real scanners flag — otherwise a
+    `.forensicsignore` line that hides one reports "hiding 0" while killing the
+    detection. Binaries are excluded (no text findings), but:
+      - agent-instruction files (SKILL.md/CLAUDE.md/AGENTS.md/routine.md/...)
+        are Markdown yet are scanned for injection DIRECTIVES — hiding one hides
+        a CRITICAL, so they count;
+      - lockfiles are scanned (dependency / integrity), so hiding one hides
+        findings — they count too.
+    """
+    base = os.path.basename(rel_path)
+    ext = normalized_ext(rel_path)
+    # Binary blobs carry no text findings.
+    if ext in BINARY_EXTENSIONS:
+        return False
+    # Agent-instruction files are scanned for directives even though they are
+    # Markdown (which _is_doc_file would otherwise treat as prose).
+    if _is_agent_instruction_file(rel_path):
+        return True
+    # Lockfiles are scanned by the dependency/integrity engines.
+    if base in LOCKFILES:
+        return True
+    return not _is_doc_file(rel_path)
+
+
+def dangerous_ignore_coverage(repo_path, patterns):
+    """Measure what `patterns` actually suppress against the REAL repo tree.
+
+    Walks the repo UNFILTERED (ignoring the .forensicsignore under test), then
+    for each pattern counts the scannable-source files it hides via the same
+    should_ignore() the scan uses. Returns a dict:
+      {broad_patterns, source_total, suppressed_total, per_pattern, wiped_langs}
+    A pattern is broad when it hides >= _BROAD_COVERAGE_ABS source files, or is a
+    walk-free-known broad pattern, or 100%-wipes a present language; the file is
+    broad in aggregate when suppressed/source >= _BROAD_COVERAGE_RATIO. This
+    measures the SAME set should_ignore acts on, so no fixed sentinel list can
+    leave a whole real tree (skills/, hooks/, ...) uncovered."""
+    source_rel = []
+    try:
+        for _abs, rel in walk_repo(repo_path, ignore_patterns=[]):
+            if _is_scannable_source(rel):
+                source_rel.append(rel)
+    except OSError:
+        pass
+
+    by_lang = {}
+    for rel in source_rel:
+        by_lang.setdefault(os.path.splitext(rel)[1].lower(), []).append(rel)
+
+    per_pattern = {}
+    suppressed_any = set()
+    broad = []
+    critical = []
+    wiped_langs = []
+    for pat in patterns:
+        hidden = [rel for rel in source_rel
+                  if should_ignore(os.path.join(repo_path, rel), repo_path, [pat])]
+        per_pattern[pat] = len(hidden)
+        suppressed_any.update(hidden)
+        # Whole-language wipe: this one pattern hides every file of a language
+        # that has a meaningful presence (>=2 files).
+        wiped = [ext or "(no extension)" for ext, files in by_lang.items()
+                 if len(files) >= 2 and all(
+                     should_ignore(os.path.join(repo_path, rel), repo_path, [pat])
+                     for rel in files)]
+        wiped_langs.extend(wiped)
+        # CRITICAL tier: a total wildcard, a literal denylist entry (incl.
+        # char-class obfuscation), or a whole-language wipe. These have no
+        # legitimate use and are the shape of attacker-planted evasion.
+        is_critical = _is_dangerously_broad_pattern(pat) or bool(wiped)
+        if is_critical:
+            critical.append(pat)
+        if is_critical or len(hidden) >= _BROAD_COVERAGE_ABS:
+            broad.append(pat)
+
+    total = len(source_rel)
+    suppressed_total = len(suppressed_any)
+    if total and (suppressed_total / total) >= _BROAD_COVERAGE_RATIO:
+        for pat in patterns:
+            if pat not in broad and per_pattern.get(pat):
+                broad.append(pat)
+    return {
+        "broad_patterns": broad,
+        "critical_patterns": critical,
+        "wiped_langs": sorted(set(wiped_langs)),
+        "source_total": total,
+        "suppressed_total": suppressed_total,
+        "per_pattern": per_pattern,
+    }
+
 
 def emit_status(output_format, message):
     """Emit human status lines only for non-JSON formats."""
@@ -734,24 +1214,66 @@ def warn_forensicsignore(repo_path):
 
     findings = []
     patterns = load_ignore_patterns(repo_path)
-    has_broad = any(p in DANGEROUS_IGNORE_PATTERNS for p in patterns)
+    # Rule-level (`rule:`/`suppress:`) directives are excluded from path globs
+    # by load_ignore_patterns, but they still disable detections and MUST be
+    # counted in the human warning — otherwise a rule-only ignore file reports
+    # "Suppresses 0 pattern(s)" while silently killing findings.
+    rule_suppressions = load_rule_suppressions(repo_path)
+    # Authoritative broad-detection measures what the patterns actually suppress
+    # against the REAL repo walk (catches whole-tree suppressors like `skills/`
+    # that a fixed sentinel list misses). The walk-free pre-flight is unioned in
+    # so literal wildcards / char-class obfuscation are still caught when there
+    # is no source to walk (empty fixtures).
+    coverage = dangerous_ignore_coverage(repo_path, patterns)
+    critical = list(coverage["critical_patterns"])
+    for p in patterns:
+        if p not in critical and _is_dangerously_broad_pattern(p):
+            critical.append(p)
+    broad = list(coverage["broad_patterns"])
+    for p in critical:
+        if p not in broad:
+            broad.append(p)
+    total_suppressions = len(patterns) + len(rule_suppressions)
 
-    if has_broad:
+    if critical:
+        # CRITICAL tier: total wildcard (`*`, `**`, `.`, `*.*`), a literal
+        # DANGEROUS_IGNORE_PATTERNS entry (incl. char-class obfuscation like
+        # `*.[p]y`), or a whole-language wipe. None of these has a legitimate
+        # use; each is the shape of attacker-planted evasion.
+        wiped = coverage.get("wiped_langs") or []
         findings.append(Finding(
             scanner="meta", severity="critical",
-            title=".forensicsignore: Wildcard Suppression",
-            description="Contains broad patterns (e.g. '*') that suppress ALL findings. Likely attacker-planted.",
+            title=".forensicsignore: Wildcard / Whole-Language Suppression",
+            description=(
+                f"Wildcard or whole-language patterns suppress "
+                f"{coverage['suppressed_total']} of {coverage['source_total']} "
+                f"scannable source file(s)"
+                + (f", wiping 100% of {', '.join(wiped)}" if wiped else "")
+                + f" — the shape of attacker-planted evasion. Patterns: {critical}."
+            ),
             file=".forensicsignore", line=0,
-            snippet=f"Broad patterns: {[p for p in patterns if p in DANGEROUS_IGNORE_PATTERNS]}",
+            snippet=f"Wildcard patterns: {critical}",
             category="configuration"
         ))
     else:
+        # VISIBLE tier: a legitimate scoped ignore (a first-party self-scan
+        # routinely hides most of its own tree) stays exit 0 but is NEVER
+        # silent — the coverage it hides is stated so a reader can audit it.
+        # LOW, not MEDIUM: any repo carrying a .forensicsignore would otherwise
+        # be pinned at exit 1 forever, which trains operators to ignore it.
+        severity = "low"
         findings.append(Finding(
-            scanner="meta", severity="medium",
+            scanner="meta", severity=severity,
             title=".forensicsignore Present",
-            description=f"Suppresses {len(patterns)} pattern(s). Verify it wasn't planted by an attacker.",
+            description=(
+                f"Suppresses {total_suppressions} item(s): "
+                f"{len(patterns)} path pattern(s) (hiding {coverage['suppressed_total']} "
+                f"of {coverage['source_total']} source file(s)), "
+                f"{len(rule_suppressions)} rule suppression(s). "
+                f"Verify it wasn't planted by an attacker."
+            ),
             file=".forensicsignore", line=0,
-            snippet=f"Patterns: {patterns[:3]}",
+            snippet=f"Patterns: {patterns[:3]}; Rules: {[s.get('rule_id', s.get('raw')) for s in rule_suppressions[:3]]}",
             category="configuration"
         ))
     return findings
@@ -816,20 +1338,61 @@ def sha256_file(filepath):
         return None
 
 
-def is_binary_file(file_path):
-    """Check if file is binary by extension, null bytes, or content sniffing."""
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext in BINARY_EXTENSIONS:
+# Binary classification is decided by CONTENT, not by a single sentinel byte or
+# the extension. A lone NUL is trivially prepended by an attacker, and an
+# extension is attacker-chosen — both previously hid plaintext secrets AND
+# blinded every text scanner at once, because walk_repo is shared.
+_BINARY_SNIFF_BYTES = 8192
+# Fraction of non-text bytes above which a sample is really binary. Mirrors the
+# ratio test scan_archive already uses on archive members.
+_BINARY_NONTEXT_RATIO = 0.30
+# Stricter bar for overriding a binary EXTENSION: only content that is almost
+# entirely printable text reclassifies a .png/.pdf/.zip as scannable text.
+_BINARY_EXT_OVERRIDE_RATIO = 0.10
+
+
+def _nontext_ratio(chunk):
+    """Fraction of bytes in `chunk` that cannot appear in plain text."""
+    if not chunk:
+        return 0.0
+    nontext = sum(1 for b in chunk if b < 9 or (13 < b < 32) or b == 127)
+    return nontext / len(chunk)
+
+
+def _decodes_as_text(chunk):
+    """True if the sniff sample is valid UTF-8. A multi-byte character cut by
+    the sample boundary is a read artifact, not a binary signal."""
+    try:
+        chunk.decode('utf-8')
         return True
+    except UnicodeDecodeError as exc:
+        return exc.start >= len(chunk) - 4
+
+
+def is_binary_file(file_path):
+    """Check if a file is binary by SNIFFING its content.
+
+    The extension and the null-byte sentinel are hints, never verdicts:
+      - no binary extension: binary only when the sample is densely non-text.
+        A text file carrying a sprinkled NUL stays scannable (the NUL-prefix
+        trick blinded every text scanner through the shared walk_repo).
+      - binary extension: still sniffed, and reclassified as TEXT when the
+        sample is overwhelmingly printable — a payload renamed `logo.png`
+        must not fall off the scan surface.
+    Unreadable files stay binary (nothing to scan either way)."""
     try:
         with open(file_path, 'rb') as f:
-            chunk = f.read(1024)
-        if b'\x00' in chunk:
-            return True
-        chunk.decode('utf-8')
-        return False
-    except (UnicodeDecodeError, PermissionError, OSError):
+            chunk = f.read(_BINARY_SNIFF_BYTES)
+    except (PermissionError, OSError):
         return True
+    if not chunk:
+        return False
+    if not _decodes_as_text(chunk):
+        return True
+    ratio = _nontext_ratio(chunk)
+    if normalized_ext(file_path) in BINARY_EXTENSIONS:
+        return ratio > _BINARY_EXT_OVERRIDE_RATIO
+    return ratio > _BINARY_NONTEXT_RATIO
 
 
 def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=True, skip_binary=True):
@@ -974,10 +1537,11 @@ _TRIFECTA_CREDENTIAL_RE = re.compile(
     r'\.env(?!\.example|\.template)(?:\s|\)|\'|"|$))'
 )
 
-_TRIFECTA_SCAN_EXTENSIONS = {
-    '.py', '.js', '.ts', '.jsx', '.tsx', '.sh', '.bash', '.rb', '.go',
-    '.rs', '.php', '.pl', '.ps1',
-}
+# Derived from the ONE canonical code-extension set: a hand-kept second
+# allowlist is how `.js` -> `.mjs` slipped past the trifecta scanner while
+# staying fully executable. `.md` is included on purpose — agent-instruction
+# markdown carries live directives.
+_TRIFECTA_SCAN_EXTENSIONS = set(_CODE_EXTS) | {'.md', '.markdown'}
 _TRIFECTA_MAX_SCAN_FILES = 5000
 _TRIFECTA_MAX_SCAN_BYTES = 2 * 1024 * 1024  # 2MB per file
 
@@ -1017,7 +1581,7 @@ def detect_trifecta_raw(repo_path, ignore_patterns=None):
     for file_path, rel_path in walker:
         if scanned >= _TRIFECTA_MAX_SCAN_FILES:
             break
-        ext = os.path.splitext(file_path)[1].lower()
+        ext = normalized_ext(file_path)
         if ext not in _TRIFECTA_SCAN_EXTENSIONS:
             continue
 
@@ -1171,7 +1735,7 @@ def detect_registry_hijack_raw(repo_path, ignore_patterns=None):
         if scanned >= _REGISTRY_MAX_SCAN_FILES:
             break
         base = os.path.basename(file_path).lower()
-        ext = os.path.splitext(base)[1].lower()
+        ext = normalized_ext(base)
         if ext not in _REGISTRY_SCAN_EXTS and base not in _REGISTRY_SCAN_NAMES:
             continue
         # Count toward the budget once a file passes the extension gate, so an
@@ -1445,7 +2009,7 @@ def correlate(findings, repo_path=None):
     # Scanners whose findings are already compound family verdicts (a YARA
     # match is a confirmed multi-string indicator, not a primitive capability).
     # Feeding their descriptive prose back into keyword correlation
-    # manufactures compound findings from vocabulary accidents (D1: "$_REQUEST"
+    # manufactures compound findings from vocabulary accidents ("$_REQUEST"
     # in a webshell explanation satisfies network_keywords with no network call
     # present). They remain in the report at full weight; they simply never act
     # as correlation LEAVES. Because every correlation rule (1-27, trifecta,
@@ -1460,7 +2024,7 @@ def correlate(findings, repo_path=None):
         # path. Real findings always have a non-empty file path.
         if not f.file or f.file in _SYNTHETIC_FILE_TOKENS:
             continue
-        # D1: exclude compound-family scanners from the correlation leaf pool.
+        # Exclude compound-family scanners from the correlation leaf pool.
         # Their findings stay in the report (the caller still has the full
         # `findings` list); they just never seed/satisfy a correlation bucket.
         if f.scanner in _CORRELATION_LEAF_EXCLUDED_SCANNERS:

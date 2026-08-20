@@ -46,7 +46,9 @@ class TestUnsupportedArchiveCoverage:
 
         assert report["coverage_status"]["overall"] == "UNSUPPORTED"
         assert report["coverage_status"]["per_scanner"]["archive"]["status"] == "UNSUPPORTED"
-        assert report["exit_code"] == 0
+        # An unopenable .7z is an uninspected executable indirection —
+        # exit is floored at 1 instead of silently passing.
+        assert report["exit_code"] == 1
 
 
 class TestBudgetExhaustionCoverage:

@@ -252,7 +252,7 @@ def _make_snippet(file_path, match_bytes):
     return "match: {}".format(cleaned) if cleaned else "match: <bytes>"
 
 
-def _evidence_class_for_match(rel_path):
+def _evidence_class_for_match(rel_path, content=None):
     """Classify the carrier file's context and gate the match's
     evidence_class per the YARA policy (design §3.1/§3.4).
 
@@ -264,12 +264,15 @@ def _evidence_class_for_match(rel_path):
     and records original_severity (aggregate_json.apply_evidence_caps) -> the
     finding stays listed and auditable, never silently suppressed.
 
-    No content is read here: the YARA policy is file-context-only and both
-    binary and code map to ``direct``, so the optional shebang/blocklist content
-    signals are no-ops for YARA (design §2.2 note). Integrity/timeout/read-error
-    findings keep ``direct`` and do NOT route through this helper.
+    ``content`` is the file bytes the caller already read (for the snippet). It
+    is threaded into the classifier so the shebang upgrade fires for an
+    extensionless script (``tests/setup`` with a ``#!`` line) -> code -> direct,
+    instead of demoting to inferred -> LOW -> exit 0. Fail closed: an unknown
+    executable carrier must not be graded down by an attacker-chosen folder.
+    Integrity/timeout/read-error findings keep ``direct`` and do NOT route
+    through this helper.
     """
-    file_ctx = _context_gate.classify_file_context(rel_path)
+    file_ctx = _context_gate.classify_file_context(rel_path, content=content)
     return _context_gate.gate_evidence(file_ctx, policy="yara")
 
 
@@ -294,6 +297,15 @@ def _emit_match_finding(match, file_path, rel_path):
     match_bytes = _first_match_data(match)
     line = _resolve_line(file_path, offset)
     snippet = _make_snippet(file_path, match_bytes)
+    # Read the carrier bytes so the classifier can run the shebang upgrade for
+    # an extensionless script (#! first line -> code -> direct). classify caps
+    # at 1MB and degrades to path-only on None, so an over-cap or unreadable
+    # file still fails closed via the extension set.
+    try:
+        with open(file_path, "rb") as handle:
+            file_content = handle.read(_context_gate._CONTENT_MAX_BYTES + 1)
+    except OSError:
+        file_content = None
     return core.Finding(
         scanner=SCANNER_NAME,
         severity=meta.get("severity", "medium"),
@@ -308,7 +320,7 @@ def _emit_match_finding(match, file_path, rel_path):
         attacker=meta.get("attacker", ""),
         boundary=meta.get("boundary", ""),
         asset=meta.get("asset", ""),
-        evidence_class=_evidence_class_for_match(rel_path),
+        evidence_class=_evidence_class_for_match(rel_path, content=file_content),
     )
 
 
