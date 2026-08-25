@@ -58,9 +58,22 @@ jobs:
           --require-hashes --only-binary=:all:
           -r .github/requirements/pytest.txt
 
+      # test_shipped_manifest_signature_verifies is deselected here on purpose.
+      # It asserts checksums.json is signed by the pinned release key -- a
+      # RELEASE property, not a test-health one. The private seed lives outside
+      # the repo, so any PR that touches a tracked file regenerates
+      # checksums.json and invalidates the signature until a maintainer re-signs.
+      # Leaving it in this job would make "Tests" permanently red for every
+      # contributor and say nothing about whether the tests actually pass.
+      #
+      # It is NOT skipped overall: verify-checksums.yml runs
+      # `verify_install.py --verify-signature` as its own gate, which is where a
+      # signing failure belongs and where it stays visible.
       - name: repo-forensics suite
         working-directory: skills/repo-forensics
-        run: python -m pytest tests/ -q
+        run: >-
+          python -m pytest tests/ -q
+          --deselect tests/test_manifest_signature.py::test_shipped_manifest_signature_verifies
 
       - name: forensify suite
         working-directory: skills/repo-forensics

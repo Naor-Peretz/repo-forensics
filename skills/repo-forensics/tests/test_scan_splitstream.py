@@ -10,8 +10,17 @@ literal pipe-to-shell strings the environment exfil-guard blocks.
 
 import base64
 import os
-import resource
 import time
+
+# POSIX-only stdlib module. Imported unguarded, this aborted pytest COLLECTION on
+# Windows -- "Interrupted: 1 error during collection" -- so none of the 32 tests
+# in this file ran, and the whole suite exited non-zero. Only _peak_rss_mb()
+# needs it. Same guard the production scanner already uses
+# (scripts/_pyc_unmarshal.py).
+try:
+    import resource
+except ImportError:  # non-POSIX (Windows)
+    resource = None
 
 import pytest
 
@@ -511,6 +520,12 @@ def _peak_rss_mb():
     return rss / (1024 * 1024) if rss > 10 ** 7 else rss / 1024
 
 
+_NEEDS_RSS = pytest.mark.skipif(
+    resource is None,
+    reason="peak-RSS measurement needs the POSIX-only 'resource' module")
+
+
+@_NEEDS_RSS
 class TestHardSafeMemoryBound:
     """perf CRITICAL #1: six files each with a ~900KB-1MB base64 fragment form the
     minimum 6-member group (all under MAX_FRAGMENT_BYTES / MAX_GROUP_BYTES). The
