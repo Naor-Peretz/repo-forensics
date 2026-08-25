@@ -1,7 +1,7 @@
 {
   "version": "2",
   "generator": "repo-forensics/verify_install",
-  "file_count": 78,
+  "file_count": 79,
   "files": {
     ".gitignore": "8b2598a3359a556874b8069d42dea2686f07d46c3ca1b540c4025788b258180a",
     "SKILL.md": "defa65449b2f1a24cdcb943592cee590553d401b1fc22cd9bd460e85924bbc65",
@@ -21,6 +21,7 @@
     "data/yara/malware.yar": "a6c773232622e6b4bd1b236c9bf0e8ac453cd406f7ecaf07a16f25129a3f1300",
     "data/yara/manifest.json": "64334dd408b2880df94cb7b3e300820d54c4adcecd187c6398398b6e5facdce1",
     "data/yara/webshells.yar": "b3157112732722063e56819e4c3e73d298edb245a8a284474e69a258847d005f",
+    "references/cursor-hook-contract.md": "5d512cd0fb67947b24458cd8892287e4dee67e08b08e4325397c2dcf09d7d94f",
     "references/mcp-attack-patterns.md": "722d7a47186bfee18bde0e06a749dc55e8cc716c2418d118a64e57d60e48689a",
     "references/research_sources.md": "b68cedd3bf08e4f526f6eed948a5b44c6e3b3a12cd1ab5f13f115490cfd8a91e",
     "references/threat_patterns.md": "ae24833171b787a7aedca7e1d1baee278ac58c84a6446c89c6cbf70bd1f5152e",

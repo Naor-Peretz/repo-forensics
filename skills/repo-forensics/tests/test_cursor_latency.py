@@ -28,6 +28,7 @@ flip), and carry a relative check that is immune to how slow the host is.
 """
 
 import json
+import os
 import statistics
 import time
 from pathlib import Path
@@ -39,8 +40,23 @@ WARMUP = 3
 SAMPLES = 15
 
 # Absolute ceilings (milliseconds, whole process incl. interpreter startup).
-CLEAN_MEDIAN_CEILING_MS = 400
-IOC_MEDIAN_CEILING_MS = 600
+#
+# Scaled on Windows, and not by a guess: this repo already carries a Windows-only
+# CI failure of exactly this kind -- test_session_scan.py::TestLatency asserts
+# `< 300ms` and measured 453ms on a shared windows-latest runner while ubuntu and
+# macOS passed. Python process startup there is several times the POSIX cost
+# before any of our code runs, and a shared runner adds variance on top.
+#
+# Adding a Windows job (this PR does) while keeping POSIX-tuned wall-clock
+# assertions would import that same flake into a second workflow. The absolute
+# numbers are a coarse "did someone put real work on this path" alarm; the guard
+# that actually has teeth is the host-independent ratio check below, plus the
+# structural invariants in TestBlockingPathDoesNoRealWork.
+_WINDOWS = os.name == "nt"
+_SCALE = 4 if _WINDOWS else 1
+
+CLEAN_MEDIAN_CEILING_MS = 400 * _SCALE
+IOC_MEDIAN_CEILING_MS = 600 * _SCALE
 
 # The Cursor adapter must not cost meaningfully more than the Claude one: they
 # run the same detector behind the same interpreter, so any real gap is the
