@@ -44,6 +44,7 @@ def discover_manifests(root):
         root / ".claude-plugin/plugin.json",
         root / ".claude-plugin/marketplace.json",
         root / ".codex-plugin/plugin.json",
+        root / ".cursor-plugin/plugin.json",
         root / "openclaw/openclaw.plugin.json",
     ]
     for plugin in (root / "plugins").glob("*") if (root / "plugins").is_dir() else ():
@@ -51,6 +52,7 @@ def discover_manifests(root):
             plugin / ".claude-plugin/plugin.json",
             plugin / ".claude-plugin/marketplace.json",
             plugin / ".codex-plugin/plugin.json",
+            plugin / ".cursor-plugin/plugin.json",
         ))
     return sorted(path for path in paths if path.is_file())
 

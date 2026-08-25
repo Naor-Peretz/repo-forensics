@@ -1,20 +1,42 @@
 #!/usr/bin/env python3
 """
-pre_scan.py - PreToolUse hook handler for repo-forensics v2.
-Lightweight pre-execution gate that blocks known-malicious packages and
-pipe-to-shell patterns BEFORE the command runs.
+pre_scan.py - pre-execution hook handler for repo-forensics v2.
+Lightweight gate that blocks known-malicious packages and pipe-to-shell
+patterns BEFORE the command runs.
 
-Runs as a Claude Code PreToolUse hook. Reads JSON from stdin, outputs JSON
-to stdout. Fast path (<10ms for non-matching commands). IOC-only — no
-subprocess calls, no full scans (those run post-execution in auto_scan.py).
+Runs as a Claude Code / Codex / OpenClaw **PreToolUse** hook and as a Cursor
+**beforeShellExecution** hook (`--adapter cursor`). Reads JSON from stdin,
+outputs JSON to stdout. Fast path (<10ms for non-matching commands). IOC-only
+— no subprocess calls, no full scans (those run post-execution in auto_scan.py).
 
 Design constraints (all critical for safety):
   - MUST NOT call subprocess or spawn any child process (avoids recursive
     hook triggers and keeps latency under 200ms even on IOC matches)
   - MUST NOT block commands when IOC database is unavailable (graceful
     degradation — approve on error, never silently block legitimate work)
-  - MUST output valid JSON to stdout in all code paths (empty {} = approve)
-  - MUST exit 0 for approve, exit 2 for block (Claude Code convention)
+  - MUST output valid JSON to stdout in all code paths (empty {} = approve
+    on the Claude shape, {"permission": ...} on the Cursor shape)
+  - MUST exit 0 for approve/ask, exit 2 for block
+
+Adapters (PRD v3 R2/G3): envelope normalisation and verdict rendering live in
+hook_adapter.py so both wires run the SAME detection code. hook_adapter is a
+leaf (stdlib only, no repo imports); importing it does not weaken the
+"pre_scan stays standalone" rule, which is about never pulling in auto_scan or
+the scanner fan-out.
+
+Verdict precedence on the blocking path (PRD v3 R8/R11 — see
+hook_adapter.PRECEDENCE_DOC):
+
+    REPO_FORENSICS_PRE_SCAN=unsafe-off   allow everything, loudly
+  > install-manifest tamper              deny  (NOT user-suppressible)
+  > envelope drift on a failClosed wire  deny  (NOT user-suppressible)
+  > REPO_FORENSICS_PRE_SCAN=0            allow, loudly
+  > detection verdict                    deny / ask / allow
+
+The two integrity states outrank the ordinary kill switch on purpose: the
+switch is read from the session environment, so an earlier command in the same
+session can plant it. If it could also mask a deleted scanner or a spoofed
+envelope, one planted variable would buy an attacker the whole gate.
 
 Created by Alex Greenshpun
 """
@@ -26,6 +48,8 @@ import sys
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS_DIR)
+
+import hook_adapter  # noqa: E402  (leaf module, stdlib-only)
 
 # --- Pattern Detection ---
 # NOTE: These patterns are intentionally duplicated from auto_scan.py.
@@ -109,12 +133,77 @@ def extract_command(data):
     return tool_input.get('command', '')
 
 
+# --- Inert quote carriers ---------------------------------------------------
+# A pipe-to-shell pattern inside a quoted argument to a command that never
+# executes its arguments is someone WRITING ABOUT the attack, not performing
+# it — a `git commit -m` whose message warns against downloader-to-shell
+# pipelines, a `grep` searching the docs for them, an `echo` telling the reader
+# not to. Blocking those is the false positive that gets a blocking hook
+# uninstalled, and it fires on this repo's own commit messages, which discuss
+# pipe-to-shell constantly. (These examples are deliberately paraphrased rather
+# than written out: pre_scan.py and auto_scan.py are the blocking gate and stay
+# OUT of .forensicsignore, so a literal payload here would be a finding the
+# scanner reports against itself — see tests/test_cursor_wiring.py.)
+#
+# This is the command-string analogue of the evidence model forensics_core
+# already applies to files (a README that DESCRIBES an attack is not the
+# attack). The suppression is deliberately narrow, because the obvious wide
+# version — "ignore anything inside quotes" — is a bypass, not a fix: a
+# downloader-to-shell pipeline handed to `sh -c` as a quoted argument is both
+# quoted AND executed. So two conditions must BOTH hold: the command starts
+# with a known inert carrier, and the residue left after deleting every quoted
+# span contains no shell execution of its own. An `echo` whose quoted argument
+# is itself piped onward to a shell keeps that residual pipe and still blocks.
+# Kept identical in auto_scan.py — update both.
+# Only commands whose job is to RECORD or SEARCH FOR text, never to produce a
+# stream someone would plausibly pipe onward. `cat`, `jq` and friends are
+# deliberately absent: their output being piped to a shell is a normal thing to
+# do, so they do not belong on a list whose whole premise is "this argument is
+# inert prose". (The residual-exec check below would catch a piped `cat` too,
+# but a suppression list should not lean on a second layer to stay safe.)
+_INERT_CARRIERS = re.compile(
+    r'^\s*(?:'
+    r'echo|printf|grep|egrep|fgrep|rg|ag|ack'
+    r'|git\s+(?:commit|tag|notes|stash\s+save|config)'
+    r'|gh\s+(?:issue|pr|release)\s+[a-z-]+'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Quoted spans: single- or double-quoted, non-greedy, no cross-line matching.
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+# Residual shell execution after quoted spans are removed. Any of these means
+# the command really does hand something to a shell, so no suppression.
+_RESIDUAL_EXEC = re.compile(
+    r'\|\s*(?:' + _SHELLS + r'|iex)'
+    r'|(?:^|[\s;&|(])(?:eval|exec|source)\b'
+    r'|\B-c(?:\s|$)'
+    r'|(?:^|[\s;&|(])' + _SHELLS + r'\s+-c',
+    re.IGNORECASE,
+)
+
+
+def is_inert_quote_carrier(command):
+    """True when every pipe-to-shell signal in *command* sits inside a quoted
+    argument to a command that does not execute its arguments."""
+    if not command or not _INERT_CARRIERS.match(command):
+        return False
+    residue = _QUOTED_SPAN.sub(' ', command)
+    if _RESIDUAL_EXEC.search(residue):
+        return False
+    # The signal must be gone once the quotes are removed. If it survives, it
+    # was never inside a quoted argument in the first place — an inert carrier
+    # followed by `;` and then a real downloader-to-shell pipeline.
+    return not PIPE_TO_SHELL.search(residue)
+
+
 def detect_install_command(command):
     """Match command against install patterns.
     Returns (pattern_type, match_obj) or (None, None)."""
     if not command:
         return None, None
-    if PIPE_TO_SHELL.search(command):
+    if PIPE_TO_SHELL.search(command) and not is_inert_quote_carrier(command):
         return 'pipe_to_shell', None
     for pattern, ptype in INSTALL_PATTERNS:
         m = pattern.search(command)
@@ -362,8 +451,67 @@ def check_ioc_packages(package_names, iocs=None):
     return blocked
 
 
+# --- Registry risk (the `ask` tier) -----------------------------------------
+#
+# An install command pointed at a plaintext-HTTP index, or at a registry host
+# that is not the ecosystem's canonical one, is the setup step for dependency
+# confusion and for registry MITM. It is NOT block-worthy on its own: corporate
+# mirrors and internal indexes are legitimate and common, which is exactly why
+# forensics_core grades the file-based version of this signal MEDIUM rather
+# than HIGH. On an adapter that has a third verdict (Cursor's `ask`) this is
+# the signal that tier exists for: surface it to the human, do not hard-stop
+# the agent. On the Claude shape, which has no `ask`, it degrades to an
+# approve plus a stderr note so the operator still sees it.
+_INDEX_FLAG = re.compile(
+    r'--(?:index-url|extra-index-url|registry|repository|default-index)'
+    r'(?:[=\s]+)(["\']?)([a-zA-Z][a-zA-Z0-9+.-]*://[^\s"\';|&]+)\1',
+    re.IGNORECASE,
+)
+
+# Canonical first-party registry hosts per ecosystem. A redirect away from
+# these is what makes the flag interesting.
+CANONICAL_REGISTRY_HOSTS = frozenset({
+    'pypi.org', 'www.pypi.org', 'files.pythonhosted.org', 'pypi.python.org',
+    'registry.npmjs.org', 'registry.yarnpkg.com', 'npm.pkg.github.com',
+    'rubygems.org', 'index.rubygems.org',
+    'crates.io', 'static.crates.io', 'index.crates.io',
+    'proxy.golang.org',
+})
+
+
+def _registry_host(url):
+    """Host portion of a registry URL, lowercased, port and creds stripped."""
+    rest = url.split('://', 1)[1] if '://' in url else url
+    authority = re.split(r'[/?#]', rest, 1)[0]
+    if '@' in authority:
+        authority = authority.rsplit('@', 1)[1]
+    if authority.startswith('['):  # IPv6 literal
+        return authority.split(']', 1)[0].lstrip('[').lower()
+    return authority.split(':', 1)[0].lower()
+
+
+def detect_registry_risk(command):
+    """Return a human-readable reason when an install command redirects its
+    package index, else None. Never blocks — the caller maps this to `ask`."""
+    if not command:
+        return None
+    for match in _INDEX_FLAG.finditer(command):
+        url = match.group(2)
+        scheme = url.split('://', 1)[0].lower()
+        host = _registry_host(url)
+        if scheme == 'http':
+            return (f"package index redirected to a plaintext HTTP endpoint "
+                    f"({url}) — credentials and package payloads are readable "
+                    f"and rewritable in transit")
+        if scheme in ('https', 'ftp', 'ftps') and host not in CANONICAL_REGISTRY_HOSTS:
+            return (f"package index redirected to the non-canonical host "
+                    f"'{host}' — legitimate for an internal mirror, and also "
+                    f"how dependency-confusion attacks are staged")
+    return None
+
+
 def output_block(reason):
-    """Output JSON that tells Claude Code to block the command."""
+    """Output JSON that tells the agent to block the command (Claude shape)."""
     result = {
         "decision": "block",
         "reason": reason
@@ -373,40 +521,51 @@ def output_block(reason):
 
 
 def output_approve():
-    """Output empty JSON — command proceeds normally."""
+    """Output empty JSON — command proceeds normally (Claude shape)."""
     print('{}')
     sys.exit(0)
 
 
-def main():
-    data = parse_hook_input()
-    command = extract_command(data)
+BLOCK_PIPE_TO_SHELL = (
+    "[repo-forensics] BLOCKED: Command pipes remote content directly "
+    "to shell execution. This bypasses all package manager security "
+    "checks and can execute arbitrary code."
+)
 
+
+def _block_packages_reason(pkg_list):
+    return (
+        f"[repo-forensics] BLOCKED: Known malicious package(s) detected: "
+        f"{pkg_list}. These packages match the IOC database and should NOT "
+        f"be installed. Remove them from the command and try again."
+    )
+
+
+def decide(command):
+    """Run the detection gate on a shell command string.
+
+    Returns (permission, message) with permission in {allow, ask, deny}. This
+    is the ONE detection path; every adapter reaches the gate through here, so
+    a verdict can never diverge between wires (PRD v3 G3/N1).
+    """
     if not command:
-        output_approve()
-        return
+        return hook_adapter.ALLOW, ""
 
     # Detect install/update pattern (also catches pipe-to-shell)
     pattern_type, match = detect_install_command(command)
 
     # Pipe-to-shell: instant block
     if pattern_type == 'pipe_to_shell':
-        output_block(
-            "[repo-forensics] BLOCKED: Command pipes remote content directly "
-            "to shell execution. This bypasses all package manager security "
-            "checks and can execute arbitrary code."
-        )
-        return
+        return hook_adapter.DENY, BLOCK_PIPE_TO_SHELL
 
     if not pattern_type:
-        output_approve()
-        return
+        return hook_adapter.ALLOW, ""
 
     # Extract package names and check IOC
     package_names = extract_package_names(pattern_type, match)
     if not package_names:
-        output_approve()
-        return
+        risk = detect_registry_risk(command)
+        return (hook_adapter.ASK, _registry_ask_reason(risk)) if risk else (hook_adapter.ALLOW, "")
 
     # Load the IOC set ONCE and pass it to both checkers. The npm-family path
     # runs both check_ioc_packages() and check_ioc_pinned_versions(); without
@@ -423,28 +582,98 @@ def main():
 
     blocked_packages = check_ioc_packages(package_names, iocs=shared_iocs)
     if blocked_packages:
-        pkg_list = ', '.join(blocked_packages)
-        output_block(
-            f"[repo-forensics] BLOCKED: Known malicious package(s) detected: "
-            f"{pkg_list}. These packages match the IOC database and should NOT "
-            f"be installed. Remove them from the command and try again."
-        )
-        return
+        return hook_adapter.DENY, _block_packages_reason(', '.join(blocked_packages))
 
     # Version-pinned npm-family tokens (`name@version`) never match the name
     # sets above, so re-check them by base name and exact pinned version.
     blocked_pinned = check_ioc_pinned_versions(pattern_type, package_names, iocs=shared_iocs)
     if blocked_pinned:
-        pkg_list = ', '.join(blocked_pinned)
-        output_block(
-            f"[repo-forensics] BLOCKED: Known malicious package(s) detected: "
-            f"{pkg_list}. These packages match the IOC database and should NOT "
-            f"be installed. Remove them from the command and try again."
-        )
-        return
+        return hook_adapter.DENY, _block_packages_reason(', '.join(blocked_pinned))
 
-    # No IOC matches — approve
-    output_approve()
+    # No IOC match. A redirected package index is the one remaining signal
+    # worth a human's attention without stopping the agent.
+    risk = detect_registry_risk(command)
+    if risk:
+        return hook_adapter.ASK, _registry_ask_reason(risk)
+
+    return hook_adapter.ALLOW, ""
+
+
+def _registry_ask_reason(risk):
+    return (f"[repo-forensics] REVIEW: {risk}. Approve only if you recognise "
+            f"this index as your own.")
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    adapter, adapter_error = hook_adapter.normalize_adapter(
+        hook_adapter.adapter_from_argv(argv))
+    if adapter_error:
+        # A typo in our own installed hook command must not brick every shell
+        # command, so this warns and runs the fail-open adapter. Anyone who can
+        # edit the hook command line could equally have deleted the hook.
+        print(f"[repo-forensics] WARNING: {adapter_error}; falling back to "
+              f"'{hook_adapter.ADAPTER_CLAUDE}'", file=sys.stderr)
+
+    fail_closed = adapter in hook_adapter.FAIL_CLOSED_ADAPTERS
+
+    def emit(permission, message="", note=None):
+        sys.exit(hook_adapter.emit_verdict(
+            adapter, permission, user_message=message, agent_message=message,
+            stderr_note=note))
+
+    # (1) Blanket disable. Documented as the last resort precisely because it
+    # also switches off the fail-closed denials below.
+    switch = hook_adapter.kill_switch_state()
+    if switch == "unsafe":
+        emit(hook_adapter.ALLOW, "", note=(
+            f"[repo-forensics] WARNING: {hook_adapter.KILL_SWITCH_ENV}="
+            f"{hook_adapter.KILL_SWITCH_UNSAFE} — the pre-execution gate is FULLY "
+            f"disabled, including tamper and schema-drift detection. Nothing is "
+            f"being checked before this command runs."))
+
+    # (2) Install-manifest integrity (R8). Checked BEFORE the allow branch and
+    # before the ordinary kill switch: a scanner that the manifest says should
+    # be here but is not is tampering, not a missing optional feature.
+    root = hook_adapter.plugin_root()
+    integrity, integrity_detail = hook_adapter.check_install_integrity(root)
+    if integrity == hook_adapter.INTEGRITY_TAMPER:
+        note = (f"[repo-forensics] TAMPER: {integrity_detail}. Refusing to "
+                f"approve while the install is in an inconsistent state; "
+                f"reinstall repo-forensics or unset {hook_adapter.PLUGIN_ROOT_ENV}.")
+        if fail_closed:
+            emit(hook_adapter.DENY, note, note=note)
+        # Fail-open adapters keep their shipped behaviour (a PreToolUse hook
+        # that starts denying on upgrade would be a breaking change), but the
+        # operator is told loudly.
+        print(note, file=sys.stderr)
+
+    # (3) Envelope. Drift denies on a failClosed wire, approves on the others.
+    request = hook_adapter.parse_request(adapter, hook_adapter.read_stdin())
+    if request.drift:
+        note = (f"[repo-forensics] SCHEMA DRIFT: {request.drift}. A hook that "
+                f"cannot read its own input cannot vouch for the command.")
+        if fail_closed:
+            emit(hook_adapter.DENY, note, note=note)
+        emit(hook_adapter.ALLOW, "")
+
+    # (4) Genuinely not installed at this root: allow, but never silently.
+    if integrity == hook_adapter.INTEGRITY_UNCLAIMED:
+        emit(hook_adapter.ALLOW, "", note=(
+            f"[repo-forensics] WARNING: {integrity_detail}. The pre-execution "
+            f"gate is NOT protecting this command."))
+
+    # (5) Ordinary kill switch: detection off, integrity still enforced.
+    if switch == "detection":
+        emit(hook_adapter.ALLOW, "", note=(
+            f"[repo-forensics] WARNING: {hook_adapter.KILL_SWITCH_ENV}="
+            f"{hook_adapter.KILL_SWITCH_OFF} — malicious-package and "
+            f"pipe-to-shell detection is disabled for this command. "
+            f"Precedence: {hook_adapter.PRECEDENCE_DOC}."))
+
+    # (6) Detection.
+    permission, message = decide(request.command)
+    emit(permission, message)
 
 
 if __name__ == '__main__':

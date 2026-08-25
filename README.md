@@ -130,7 +130,12 @@ Installed as a plugin, repo-forensics also runs automatically in the background,
 | Claude Code | Plugin install auto-registers all 3 hooks | None needed |
 | Codex CLI | Plugin install auto-registers all 3 hooks | Local checkout: `python3 scripts/codex_install.py` |
 | OpenClaw | Not auto-wired by plugin system | One-time: `python3 scripts/openclaw_install.py` |
-| Cursor / NanoClaw / CLI | N/A (no plugin hook system) | Use manual `/repo-forensics` invocation |
+| Cursor | Not auto-wired by plugin system | One-time: `python3 scripts/cursor_install.py` |
+| NanoClaw / CLI | N/A (no plugin hook system) | Use manual `/repo-forensics` invocation |
+
+On Cursor the three hooks map to `beforeShellExecution` (blocking IOC gate),
+`afterShellExecution` (deep audit, observe-only), and `sessionStart`. Same
+detection code, different envelope — see **Cursor** under Install below.
 
 Claude Code v2.1.160+ may ask for an extra acceptEdits confirmation before writing package-manager and dev-environment config files such as `.npmrc`, `.yarnrc*`, `bunfig.toml`, `.bazelrc`, `.pre-commit-config.yaml`, and `.devcontainer/`. Repo Forensics scans these files normally; the extra prompt is Claude Code's own write-safety layer.
 
@@ -197,7 +202,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 ---
 ## Battle-Tested Against Real Attacks
 
-2,741 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
+3,405 tests across 40+ test files. Not synthetic toy examples: detection patterns built from real supply chain campaigns that hit production systems.
 
 **Named attack campaigns in the IOC database:**
 
@@ -228,7 +233,7 @@ Scanning never requires network access. The feed is a freshness layer on top of 
 
 Every campaign above has version-pinned IOCs in `compromised_versions.json`, detection rules in the lifecycle and dependency scanners, and correlation rules for compound attack patterns.
 
-**The tests are safe to run.** All 2,741 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
+**The tests are safe to run.** All 3,405 tests use synthetic fixtures in temporary directories. No real malware is downloaded or executed. Pattern matching runs against fake package.json files containing attack signatures, the same way antivirus software tests against EICAR strings.
 
 ---
 ## Why Not the Alternatives?
@@ -482,7 +487,7 @@ Exit codes: `0` = clean, `1` = warn, `2` = block merge.
 | **IOC auto-update** | `--update-iocs` pulls latest C2 IPs, malicious domains, known-bad packages |
 | **Installation verification** | `--verify-install` checks repo-forensics itself for tampering |
 | **Manifest drift** | Declared vs actual imports, phantom deps, runtime installs |
-| **2,741 pytest tests** | Full coverage across 40+ test files |
+| **3,405 pytest tests** | Full coverage across 40+ test files |
 
 </details>
 
@@ -538,6 +543,47 @@ python3 scripts/openclaw_install.py
 
 This adds PreToolUse, PostToolUse, and SessionStart hooks to `~/.openclaw/openclaw.json`. Uninstall with `--uninstall`.
 OpenClaw 2026.6.1+ operator install policy is supported; the installer preserves `security.installPolicy`, does not use unsafe force-install flags, and can be checked with `python3 scripts/openclaw_install.py --verify`.
+
+</details>
+
+<details>
+<summary><b>Cursor</b> (one-time setup, blocks malicious commands before they run)</summary>
+
+```bash
+python3 scripts/cursor_install.py
+```
+
+Writes three hooks to `~/.cursor/hooks.json`:
+
+| Cursor event | What it does |
+|---|---|
+| `beforeShellExecution` | Blocks known-malicious installs and pipe-to-shell **before the command executes**. Fast IOC gate only (~18ms including interpreter startup; the detection itself is microseconds). |
+| `afterShellExecution` | Full 27-scanner audit of what was just installed or cloned. Observe-only — it never gates execution. |
+| `sessionStart` | Baseline diff of plugins/skills/MCP servers, plus threat-feed refresh. Cursor does not always dispatch this in cloud contexts, so the blocking hook bootstraps the refresh daemon too, behind a once-per-session latch. |
+
+The installer merges rather than overwrites: existing non-repo-forensics hooks
+are preserved, the required `version` field is never dropped, the write is
+atomic with a `.bak` and rolls back if validation fails, and `--uninstall`
+removes only entries marked `REPO_FORENSICS_MANAGED=1`. Check a wiring with
+`python3 scripts/cursor_install.py --verify`.
+
+Cursor gets a third verdict the other agents do not have: **ask**. An install
+pointed at a plaintext-HTTP or non-canonical package index is a real
+dependency-confusion signal, but internal mirrors produce it too — so it goes to
+the human instead of being blocked or silently waved through.
+
+**Turning it off.** `REPO_FORENSICS_PRE_SCAN=0` disables detection on the
+blocking path. It deliberately does *not* disable the tamper and schema-drift
+denials: the variable is read from the session environment, so an earlier
+command could plant it, and one planted variable must not buy the whole gate.
+The full escape hatch is `REPO_FORENSICS_PRE_SCAN=unsafe-off`, which says what
+it is.
+
+**If the scanner goes missing.** A blocking hook that approves when its scanner
+is absent is a blocking hook you disable by deleting one file. `cursor_install.py`
+writes an `install-manifest.json`; if a file the manifest claims is gone at
+runtime, the hook denies and says why. If nothing claims it, that is a genuine
+"not installed here" and it allows — loudly.
 
 </details>
 

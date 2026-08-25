@@ -162,6 +162,13 @@ forensify --format both
 | Codex | `${CODEX_HOME:-~/.codex}/` | dotfolder, env override |
 | OpenClaw | `~/.openclaw/` + `~/.agents/skills/` | dotfolder, workspace profile |
 | NanoClaw | `$NANOCLAW_DIR` or common paths | git repo signature scan |
+| Cursor | `${CURSOR_HOME:-~/.cursor}/` | dotfolder, env override |
+
+Cursor's `hooks.json` gets particular attention. A `beforeShellExecution` entry
+runs ahead of every shell command the agent issues, with the user's full
+environment, and it can approve or rewrite that command — so an entry nobody
+recognises is an arbitrary-code-execution surface, not a preference. Forensify
+reports the command string and file metadata; it never executes it.
 
 ## Security invariants
 

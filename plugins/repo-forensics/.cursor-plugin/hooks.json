@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/cursor/run_pre_scan.sh\"",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/cursor/run_auto_scan.sh\"",
+        "timeout": 30
+      }
+    ],
+    "sessionStart": [
+      {
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/cursor/run_session_scan.sh\"",
+        "timeout": 25
+      }
+    ]
+  }
+}

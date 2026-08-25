@@ -28,3 +28,7 @@ TORTURE-FINDINGS.md
 FIX-MANDATE.md
 *.patch
 review-*.md
+
+# Cursor install runtime artifact (written by scripts/cursor_install.py,
+# removed by --uninstall). Per-install state, never committed.
+install-manifest.json

@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-auto_scan.py - PostToolUse hook handler for repo-forensics v2.
-Detects install/clone commands in Bash tool calls and auto-triggers security scans.
+auto_scan.py - post-execution hook handler for repo-forensics v2.
+Detects install/clone commands in shell tool calls and auto-triggers security scans.
 
-Runs as a Claude Code PostToolUse hook. Reads JSON from stdin, outputs JSON to stdout.
-Fast path (<10ms for non-matching commands).
+Runs as a Claude Code / Codex / OpenClaw PostToolUse hook and as a Cursor
+afterShellExecution hook (`--adapter cursor`). Reads JSON from stdin, writes its
+report to stdout. Fast path (<10ms for non-matching commands).
+
+OBSERVE-ONLY on every adapter. This is where the deep 27-scanner audit runs, so
+it deliberately never gates execution — the blocking decision belongs to
+pre_scan.py, which is the only thing fast enough to sit in front of the agent's
+inner loop (PRD v3 R2).
 
 Created by Alex Greenshpun
 """
@@ -18,6 +24,8 @@ import sys
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS_DIR)
+
+import hook_adapter  # noqa: E402  (leaf module, stdlib-only)
 
 # --- Install/Clone Pattern Detection ---
 
@@ -137,6 +145,71 @@ def extract_command(data):
     return tool_input.get('command', '')
 
 
+# --- Inert quote carriers ---------------------------------------------------
+# A pipe-to-shell pattern inside a quoted argument to a command that never
+# executes its arguments is someone WRITING ABOUT the attack, not performing
+# it — a `git commit -m` whose message warns against downloader-to-shell
+# pipelines, a `grep` searching the docs for them, an `echo` telling the reader
+# not to. Blocking those is the false positive that gets a blocking hook
+# uninstalled, and it fires on this repo's own commit messages, which discuss
+# pipe-to-shell constantly. (These examples are deliberately paraphrased rather
+# than written out: pre_scan.py and auto_scan.py are the blocking gate and stay
+# OUT of .forensicsignore, so a literal payload here would be a finding the
+# scanner reports against itself — see tests/test_cursor_wiring.py.)
+#
+# This is the command-string analogue of the evidence model forensics_core
+# already applies to files (a README that DESCRIBES an attack is not the
+# attack). The suppression is deliberately narrow, because the obvious wide
+# version — "ignore anything inside quotes" — is a bypass, not a fix: a
+# downloader-to-shell pipeline handed to `sh -c` as a quoted argument is both
+# quoted AND executed. So two conditions must BOTH hold: the command starts
+# with a known inert carrier, and the residue left after deleting every quoted
+# span contains no shell execution of its own. An `echo` whose quoted argument
+# is itself piped onward to a shell keeps that residual pipe and still blocks.
+# Kept identical in pre_scan.py — update both.
+# Only commands whose job is to RECORD or SEARCH FOR text, never to produce a
+# stream someone would plausibly pipe onward. `cat`, `jq` and friends are
+# deliberately absent: their output being piped to a shell is a normal thing to
+# do, so they do not belong on a list whose whole premise is "this argument is
+# inert prose". (The residual-exec check below would catch a piped `cat` too,
+# but a suppression list should not lean on a second layer to stay safe.)
+_INERT_CARRIERS = re.compile(
+    r'^\s*(?:'
+    r'echo|printf|grep|egrep|fgrep|rg|ag|ack'
+    r'|git\s+(?:commit|tag|notes|stash\s+save|config)'
+    r'|gh\s+(?:issue|pr|release)\s+[a-z-]+'
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Quoted spans: single- or double-quoted, non-greedy, no cross-line matching.
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+# Residual shell execution after quoted spans are removed. Any of these means
+# the command really does hand something to a shell, so no suppression.
+_RESIDUAL_EXEC = re.compile(
+    r'\|\s*(?:' + _SHELLS + r'|iex)'
+    r'|(?:^|[\s;&|(])(?:eval|exec|source)\b'
+    r'|\B-c(?:\s|$)'
+    r'|(?:^|[\s;&|(])' + _SHELLS + r'\s+-c',
+    re.IGNORECASE,
+)
+
+
+def is_inert_quote_carrier(command):
+    """True when every pipe-to-shell signal in *command* sits inside a quoted
+    argument to a command that does not execute its arguments."""
+    if not command or not _INERT_CARRIERS.match(command):
+        return False
+    residue = _QUOTED_SPAN.sub(' ', command)
+    if _RESIDUAL_EXEC.search(residue):
+        return False
+    # The signal must be gone once the quotes are removed. If it survives, it
+    # was never inside a quoted argument in the first place — an inert carrier
+    # followed by `;` and then a real downloader-to-shell pipeline.
+    return not PIPE_TO_SHELL.search(residue)
+
+
 def detect_install_command(command):
     """Match command against install/clone patterns.
     Returns (pattern_type, match_obj) or (None, None)."""
@@ -144,7 +217,7 @@ def detect_install_command(command):
         return None, None
 
     # Check pipe-to-shell first (instant CRITICAL)
-    if PIPE_TO_SHELL.search(command):
+    if PIPE_TO_SHELL.search(command) and not is_inert_quote_carrier(command):
         return 'pipe_to_shell', None
 
     for pattern, ptype in INSTALL_PATTERNS:
@@ -715,26 +788,62 @@ def format_output(findings, command='', pattern_type='', scanned_target=''):
     return '\n'.join(lines)
 
 
-def main():
-    # Parse hook input
-    data = parse_hook_input()
-    command = extract_command(data)
+def emit_report(adapter, text):
+    """Write the post-execution report in *adapter*'s output shape.
+
+    Claude/Codex/OpenClaw surface plain text from a PostToolUse hook, which is
+    what has always been printed here. Cursor parses hook stdout as JSON, so the
+    same report is carried in the canonical verdict triple with an `allow`
+    permission — the event is observe-only, so there is no other verdict it
+    could carry.
+    """
+    if not text:
+        if adapter == hook_adapter.ADAPTER_CURSOR:
+            hook_adapter.emit_verdict(adapter, hook_adapter.ALLOW)
+        return
+    if adapter == hook_adapter.ADAPTER_CURSOR:
+        hook_adapter.emit_verdict(adapter, hook_adapter.ALLOW,
+                                  user_message=text, agent_message=text)
+        return
+    print(text)
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    adapter, adapter_error = hook_adapter.normalize_adapter(
+        hook_adapter.adapter_from_argv(argv))
+    if adapter_error:
+        print(f"[repo-forensics] WARNING: {adapter_error}; falling back to "
+              f"'{hook_adapter.ADAPTER_CLAUDE}'", file=sys.stderr)
+
+    # Parse hook input through the shared adapter so the Cursor envelope reaches
+    # the SAME detection code as the Claude one. Drift is not fatal here: this
+    # hook cannot block, so an unreadable envelope means "nothing to scan",
+    # never "deny" (that policy belongs to pre_scan.py).
+    request = hook_adapter.parse_request(adapter, hook_adapter.read_stdin())
+    if request.drift:
+        print(f"[repo-forensics] WARNING: post-execution audit skipped: "
+              f"{request.drift}", file=sys.stderr)
+        emit_report(adapter, "")
+        sys.exit(0)
+    command = request.command
 
     if not command:
+        emit_report(adapter, "")
         sys.exit(0)
 
     # Detect install/clone pattern
     pattern_type, match = detect_install_command(command)
 
     if not pattern_type:
+        emit_report(adapter, "")
         sys.exit(0)
 
     # Pipe-to-shell: instant CRITICAL, no scan needed
     if pattern_type == 'pipe_to_shell':
         findings = build_pipe_to_shell_warning(command)
         output = format_output(findings, command, pattern_type, scanned_target='pipe-to-shell')
-        if output:
-            print(output)
+        emit_report(adapter, output)
         sys.exit(0)
 
     all_findings = []
@@ -786,8 +895,7 @@ def main():
                 all_findings.extend(scan_findings)
 
     output = format_output(all_findings, command, pattern_type, scanned_target)
-    if output:
-        print(output)
+    emit_report(adapter, output)
     sys.exit(0)
 
 

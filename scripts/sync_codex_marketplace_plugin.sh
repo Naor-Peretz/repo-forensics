@@ -18,7 +18,7 @@ SCRIPT_DIRNAME="$(dirname "$SCRIPT_PATH")"
 SCRIPT_DIR="$(cd "$SCRIPT_DIRNAME" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-for marker in ".codex-plugin/plugin.json" ".claude-plugin/plugin.json" "skills/repo-forensics/SKILL.md" "skills/forensify/SKILL.md" "hooks/hooks.json"; do
+for marker in ".codex-plugin/plugin.json" ".claude-plugin/plugin.json" ".cursor-plugin/plugin.json" "skills/repo-forensics/SKILL.md" "skills/forensify/SKILL.md" "hooks/hooks.json"; do
     if [ ! -e "${REPO_ROOT}/${marker}" ]; then
         echo "ERROR: REPO_ROOT looks wrong (missing ${marker}): ${REPO_ROOT}" >&2
         echo "Refusing to run destructive sync." >&2
@@ -39,6 +39,11 @@ cp -R "${REPO_ROOT}/skills" "${STAGE}/skills"
 cp -R "${REPO_ROOT}/hooks" "${STAGE}/hooks"
 cp -R "${REPO_ROOT}/.codex-plugin" "${STAGE}/.codex-plugin"
 cp -R "${REPO_ROOT}/.claude-plugin" "${STAGE}/.claude-plugin"
+# O5 decision: the Cursor manifest ships INSIDE the mirror. The alternative —
+# leaving it out — is the same choice made silently, and a mirror missing a
+# manifest the integrity registry checksums is a mirror that fails verification
+# for a reason nobody would guess. hooks/cursor/* rides along inside hooks/.
+cp -R "${REPO_ROOT}/.cursor-plugin" "${STAGE}/.cursor-plugin"
 
 find "${STAGE}" \( \
     -name '__pycache__' -o \
@@ -76,6 +81,10 @@ fi
 ln -s "skills/repo-forensics" "${STAGE}/skill"
 
 [ -f "${STAGE}/.codex-plugin/plugin.json" ] || { echo "ERROR: nested Codex manifest missing" >&2; exit 4; }
+[ -f "${STAGE}/.cursor-plugin/plugin.json" ] || { echo "ERROR: nested Cursor manifest missing" >&2; exit 4; }
+for _cursor_hook in run_pre_scan.sh run_auto_scan.sh run_session_scan.sh; do
+    [ -f "${STAGE}/hooks/cursor/${_cursor_hook}" ] || { echo "ERROR: nested hooks/cursor/${_cursor_hook} missing" >&2; exit 4; }
+done
 [ -f "${STAGE}/hooks/hooks.json" ] || { echo "ERROR: nested hooks.json missing" >&2; exit 4; }
 [ -f "${STAGE}/hooks/first-run-nudge.sh" ] || { echo "ERROR: nested first-run-nudge.sh missing" >&2; exit 4; }
 [ -f "${STAGE}/skills/repo-forensics/scripts/run_forensics.sh" ] || { echo "ERROR: nested repo-forensics runner missing" >&2; exit 4; }

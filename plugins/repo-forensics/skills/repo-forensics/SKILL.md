@@ -411,6 +411,96 @@ When a scan emits an **ADJUDICATION REQUIRED (WARN tier)** block — in the auto
 
 The auto-scan hook emits a self-contained instruction header inside the block itself, because that output reaches you as tool output where this SKILL.md may not be in context. This section and that header state the same protocol; they must stay in sync.
 
+## Hook Adapters (Claude Code / Codex / OpenClaw / Cursor)
+
+The hook scripts speak two envelopes over **one** detection path. `hook_adapter.py`
+normalises stdin and renders the verdict; `pre_scan.decide()` is the single gate
+every wire reaches. Two adapters, one detector — so a verdict can never diverge
+between agents (this is asserted directly by `tests/test_cursor_parity.py`).
+
+| | Claude Code / Codex / OpenClaw | Cursor |
+|---|---|---|
+| Flag | *(default, no flag)* | `--adapter cursor` |
+| Blocking event | `PreToolUse` | `beforeShellExecution` |
+| Deep audit event | `PostToolUse` | `afterShellExecution` |
+| Session event | `SessionStart` | `sessionStart` |
+| Verdict shape | `{}` / `{"decision":"block","reason":...}` | `{"permission","user_message","agent_message"}` |
+| Verdicts | allow, block | allow, **ask**, deny |
+| Unreadable stdin | **approve** (fail open) | **deny** (fail closed) |
+
+The fail-open/fail-closed split is deliberate. On Claude Code the PreToolUse
+gate is one layer with a PostToolUse deep scan behind it, and a hook that denied
+on every parse hiccup would brick all shell work. Cursor's hook is declared
+`failClosed: true` and is the only thing in front of the command, so a renamed
+or spoofed field must not silently approve a live payload.
+
+`ask` is the Cursor-only third tier, used for an install whose package index has
+been redirected to a plaintext or non-canonical host — a real
+dependency-confusion signal that internal mirrors also produce, so it wants a
+human rather than a block. The Claude shape has no `ask`; it degrades to an
+approve plus a stderr note, leaving stdout byte-identical to v2.14.2.
+
+The Cursor side of this table is **verified against the shipping client**, not
+inferred from documentation: event names, the `permission` / `user_message`
+handling, the `additional_context` session response, and the real stdin envelope
+were all read out of Cursor 3.17.19 and confirmed by a live capture. See
+[references/cursor-hook-contract.md](references/cursor-hook-contract.md) —
+including three envelope fields that appear in no docs, and why `curl | bash` is
+the wrong command to demo a blocker with.
+
+### Kill switches and precedence
+
+```
+REPO_FORENSICS_PRE_SCAN=0           detection off, integrity still enforced
+REPO_FORENSICS_PRE_SCAN=unsafe-off  everything off, including fail-closed denials
+REPO_FORENSICS_SESSION_SCAN=0       session scan off
+REPO_FORENSICS_DISABLE_REFRESH=1    background threat-feed refresh off
+```
+
+Precedence on the blocking path, strongest first:
+
+```
+unsafe-off  >  install-manifest tamper  >  envelope drift  >  PRE_SCAN=0  >  detection
+```
+
+`REPO_FORENSICS_PRE_SCAN` is read from the session environment, which means an
+earlier command in the same session can plant it. It is therefore allowed to
+silence **detection** and nothing else: if it could also silence tamper and
+drift denials, an attacker would export it, delete `pre_scan.py`, and be handed
+a permanently open gate. `unsafe-off` is the documented way out for an operator
+whose install genuinely drifted — spelled so it cannot be reached by a
+plausible-looking plant, and very loud about what it removes.
+
+### Two agents on one machine
+
+Claude Code and Cursor can both be installed and both wired to repo-forensics.
+Only one fires per command -- each app dispatches its own hooks -- so there is
+no double-block. They do share the session baseline
+(`~/.cache/repo-forensics/session-baseline.json`) and the threat-feed cache,
+which is deliberate: the baseline is keyed by content hash, so whichever agent
+starts first records the state and the other sees "nothing changed" rather than
+re-scanning the same tree. Scans are idempotent and the caches are shared on
+purpose; no per-agent isolation is needed or wanted (K5).
+
+### Tamper-aware degrade (Cursor blocking path)
+
+"The scanner is absent" and "the scanner was deleted five seconds ago" are the
+same observation at runtime. `install-manifest.json` at the plugin root is what
+separates them:
+
+| Runtime state | Verdict |
+|---|---|
+| Scanner present, command clean | allow |
+| Scanner present, IOC match | deny (exit 2) |
+| Scanner absent, **a manifest claims it** | deny + loud (tampering) |
+| Scanner absent, no manifest claims it | allow + loud (not installed here) |
+| Manifest present but corrupt / path-escaping | deny + loud |
+| Gate could not run at all (no interpreter, crash) | deny + loud |
+
+The check runs **before** the allow branch, in both `pre_scan.py` and
+`hooks/cursor/run_pre_scan.sh`. The wrapper needs its own copy: if `pre_scan.py`
+is the file that was deleted, Python never gets a vote.
+
 ## Configuration
 
 Create `.forensicsignore` in the repo root to suppress false positives:

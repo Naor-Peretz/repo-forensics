@@ -1053,12 +1053,21 @@ class TestOverridesRecursionGuard:
         assert isinstance(result, dict)
 
     def test_deeply_nested_overrides_scan_package_json(self, tmp_path):
-        """End-to-end: recursion-bomb package.json must surface a high
-        'Adversarial package.json' finding AND must not suppress IOC checks
-        for other files in the same repo."""
+        """End-to-end: recursion-bomb overrides must not suppress the IOC
+        checks for the rest of the same file.
+
+        Depth is 200 (=400 JSON levels), not thousands. It has to clear
+        _OVERRIDES_MAX_DEPTH (32) so the flattener's guard is genuinely
+        exercised, while staying under what the stdlib json codec can
+        represent at the default recursion limit of 1000 -- past ~480 levels
+        json.dumps/json.load raise RecursionError themselves, so a deeper
+        fixture never reaches the scanner at all and the test asserts nothing.
+        The unbounded case (2000 levels, no JSON round-trip) is covered
+        directly against _flatten_overrides by the sibling test above.
+        """
         nested = {}
         cur = nested
-        for _ in range(1000):
+        for _ in range(200):
             cur["next"] = {"nested": {}}
             cur = cur["next"]["nested"]
         pkg = tmp_path / "package.json"

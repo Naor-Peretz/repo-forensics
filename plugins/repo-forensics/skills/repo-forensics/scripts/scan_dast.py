@@ -242,11 +242,26 @@ def execute_hook_with_payload(hook, payload, repo_path):
     elif BWRAP_AVAILABLE:
         # Linux bubblewrap sandbox: read-only root, no network, isolated /tmp.
         # --die-with-parent ensures the sandboxed process cannot outlive us.
+        #
+        # The hook's own directory is re-bound read-only AFTER --tmpfs /tmp
+        # (bwrap applies arguments in order). Without that re-bind, the fresh
+        # tmpfs shadows any hook living under /tmp -- a repo cloned to a temp
+        # dir, a CI checkout, every pytest tmp_path -- so bash could not open
+        # the script at all and DAST silently observed nothing. Worse, bash's
+        # own "No such file or directory" diagnostic names /bin/bash, which the
+        # path-traversal indicator below then matched, turning an unrunnable
+        # hook into a CRITICAL "path traversal succeeded". Mirrors what the
+        # macOS branch already does via -D HOOK_PATH / -D HOOK_DIR.
+        #
+        # realpath for the same reason the Seatbelt branch uses it: a symlinked
+        # hook must have its resolved directory bound, not the link's.
+        hook_dir = os.path.dirname(os.path.realpath(script_path))
         exec_cmd = [
             'bwrap',
             '--ro-bind', '/', '/',
             '--dev', '/dev',
             '--tmpfs', '/tmp',
+            '--ro-bind', hook_dir, hook_dir,
             '--unshare-net',
             '--die-with-parent',
         ] + exec_cmd
@@ -299,8 +314,29 @@ def execute_hook_with_payload(hook, payload, repo_path):
             category="dast-unsandboxed"
         ))
 
-    # Check for canary leaks (env exfiltration)
-    combined_output = result['stdout'] + result['stderr']
+    # Output the HOOK produced, with the launcher's own diagnostics removed.
+    #
+    # Everything below decides severity by looking for indicator substrings in
+    # this text, so anything the interpreter said about its own failure to
+    # start must not be in it. `/bin/bash: /path/hook.sh: No such file or
+    # directory` contains the literal "/bin/bash", which is one of the
+    # path-traversal success indicators -- a hook that never ran was being
+    # reported as a CRITICAL traversal. Evidence that the hook did something
+    # has to come from the hook, not from the thing that tried to launch it.
+    _launcher = exec_cmd[-2] if len(exec_cmd) >= 2 else ''
+    _launcher_prefixes = tuple(
+        f'{p}: ' for p in {_launcher, os.path.basename(_launcher)} if p
+    )
+    _hook_stderr = '\n'.join(
+        line for line in result['stderr'].splitlines()
+        if not (_launcher_prefixes and line.startswith(_launcher_prefixes))
+    )
+    combined_output = result['stdout'] + _hook_stderr
+
+    # 127 is "could not execute": no hook ran, so no observation about its
+    # behaviour is available. Report nothing rather than something.
+    if result['exit_code'] == 127 and not result['stdout']:
+        return findings
     for canary in ('CANARY_12345', 'CANARY_67890'):
         if canary in combined_output:
             result['canary_leaked'] = True

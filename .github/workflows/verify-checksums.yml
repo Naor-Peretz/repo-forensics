@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-checksums-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -19,17 +23,25 @@ jobs:
         run: |
           cd skills/repo-forensics
           python3 scripts/verify_install.py --verify || {
-            echo "::error::Checksums are stale. Run \`python verify_install.py --generate\` locally and commit the result."
+            echo "::error::Checksums are stale. From the repo root, run \`python3 skills/repo-forensics/scripts/verify_install.py --generate\` and commit the result."
             exit 1
           }
 
       # --verify confirms files match the manifest; this confirms the manifest
       # itself is signed by the pinned release key, so a regenerated manifest
       # that was not re-signed fails here instead of shipping.
+      #
+      # The re-sign hint names a REPO-ROOT path on purpose. It used to be given
+      # as `python3 scripts/sign_release_manifest.py` next to a `cd
+      # skills/repo-forensics`, which reads as "run this from that directory" —
+      # where the script does not exist. The signer lives at the repo root
+      # `scripts/`, holds the offline private seed, and is a maintainer step:
+      # contributors can regenerate checksums.json but cannot produce a valid
+      # .sig, so this failure is a hand-off, not something to retry locally.
       - name: Verify manifest signature
         run: |
           cd skills/repo-forensics
           python3 scripts/verify_install.py --verify-signature || {
-            echo "::error::checksums.json is not signed by the pinned release key. Re-sign it with \`python3 scripts/sign_release_manifest.py\` and commit checksums.json.sig."
+            echo "::error::checksums.json is not signed by the pinned release key. A maintainer must re-sign it from the REPO ROOT with \`python3 scripts/sign_release_manifest.py\` (note: repo-root scripts/, not skills/repo-forensics/scripts/) and commit checksums.json.sig. Shipping order for new files: regenerate checksums -> re-sign .sig -> re-run scripts/sync_codex_marketplace_plugin.sh, or the mirror carries a stale signature."
             exit 1
           }

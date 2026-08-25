@@ -505,6 +505,7 @@ def _dispatch_member(data, member_name, vpath, depth, state, inner):
 def scan_repo(repo_path, ignore_patterns=None):
     all_findings = []
     state = {"files": 0, "bytes": 0, "t0": time.monotonic(), "incomplete": False}
+    starved = []  # archives that tripped a cap, in visit order (T5: name them)
     archives = 0
     for file_path, rel_path in core.walk_aux(
         repo_path, ignore_patterns=ignore_patterns, apply_size_cap=False
@@ -544,6 +545,12 @@ def scan_repo(repo_path, ignore_patterns=None):
         # Reset per-archive byte budget (cumulative file count persists). Each
         # archive is isolated: a malformed one can never crash the whole scan.
         state["bytes"] = 0
+        # Snapshot the shared flag so a cap tripped while scanning THIS archive
+        # can be attributed to it. state["incomplete"] is global and sticky, and
+        # the caps are checked deep inside the member loops, so this edge-detect
+        # at the call site is what turns "something, somewhere was truncated"
+        # into a name (T5).
+        _was_incomplete = state["incomplete"]
         try:
             if kind == "zip":
                 _scan_zip(file_path, rel_path, 0, state, all_findings)
@@ -554,12 +561,29 @@ def scan_repo(repo_path, ignore_patterns=None):
                                          f"{rel_path} raised an unexpected error during scan "
                                          f"({type(exc).__name__}); skipped.",
                                          rel_path, "opaque-archive"))
+        if state["incomplete"] and not _was_incomplete:
+            starved.append(rel_path)
 
     if state["incomplete"]:
-        all_findings.append(_finding("low", "Archive scan incomplete",
-                                     "One or more archives hit a safety cap (entry count, size, "
-                                     "ratio, time, or depth); some members were not fully inspected.",
-                                     repo_path, "archive-scan-incomplete"))
+        # Name the archives that were actually truncated. "One or more archives
+        # hit a safety cap" told an operator that something was missed but not
+        # WHERE, which is indistinguishable from a silent skip for anyone trying
+        # to act on it -- the archive that got starved is exactly the one worth
+        # re-scanning on its own. Falls back to the repo path only when the
+        # truncation could not be attributed to a specific archive.
+        if starved:
+            named = ", ".join(starved[:10])
+            more = f" (+{len(starved) - 10} more)" if len(starved) > 10 else ""
+            all_findings.append(_finding("low", "Archive scan incomplete",
+                                         f"Hit a safety cap (entry count, size, ratio, time, or "
+                                         f"depth) while scanning: {named}{more}. Some members were "
+                                         f"not fully inspected; re-scan these archives directly.",
+                                         starved[0], "archive-scan-incomplete"))
+        else:
+            all_findings.append(_finding("low", "Archive scan incomplete",
+                                         "One or more archives hit a safety cap (entry count, size, "
+                                         "ratio, time, or depth); some members were not fully inspected.",
+                                         repo_path, "archive-scan-incomplete"))
     return all_findings
 
 

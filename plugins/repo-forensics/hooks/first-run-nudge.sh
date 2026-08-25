@@ -37,6 +37,10 @@ CLAUDE_ROOT="${HOME}/.claude"
 if [ -d "$CLAUDE_ROOT" ]; then
     CLAUDE_ROOT="$(cd "$CLAUDE_ROOT" && pwd)"
 fi
+CURSOR_ROOT="${CURSOR_HOME:-${HOME}/.cursor}"
+if [ -d "$CURSOR_ROOT" ]; then
+    CURSOR_ROOT="$(cd "$CURSOR_ROOT" && pwd)"
+fi
 
 PLATFORM="generic"
 STATE_ROOT="${HOME}/.repo-forensics"
@@ -46,6 +50,9 @@ if [[ "$PLUGIN_ROOT" == "$CODEX_ROOT/"* || "$PLUGIN_ROOT" == *"/.codex/"* ]]; th
 elif [[ "$PLUGIN_ROOT" == "$CLAUDE_ROOT/"* || "$PLUGIN_ROOT" == *"/.claude/"* ]]; then
     PLATFORM="claude"
     STATE_ROOT="${CLAUDE_ROOT}/repo-forensics"
+elif [[ "$PLUGIN_ROOT" == "$CURSOR_ROOT/"* || "$PLUGIN_ROOT" == *"/.cursor/"* ]]; then
+    PLATFORM="cursor"
+    STATE_ROOT="${CURSOR_ROOT}/repo-forensics"
 fi
 NUDGE_FLAG="${STATE_ROOT}/.marketplace-nudge-shown"
 
@@ -92,6 +99,20 @@ elif [ "$PLATFORM" = "codex" ]; then
   If repo-forensics was already installed from that marketplace, reinstall it
   after refreshing the snapshot. Opt out of this hint permanently with
   REPO_FORENSICS_NUDGE=0. This message will not show again.
+
+NUDGE
+elif [ "$PLATFORM" = "cursor" ]; then
+    cat <<'NUDGE'
+
+  [repo-forensics] First-run tip: keep this install fresh so you get new IOCs,
+  detection rules, and critical security patches. beforeShellExecution blocks
+  known-malicious installs before they run, and it can only block what its
+  IOC database knows about.
+
+      python3 scripts/cursor_install.py --verify
+
+  re-checks that the hooks are wired and current. Opt out of this hint
+  permanently with REPO_FORENSICS_NUDGE=0. This message will not show again.
 
 NUDGE
 else

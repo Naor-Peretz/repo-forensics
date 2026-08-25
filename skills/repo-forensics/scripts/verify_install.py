@@ -67,39 +67,56 @@ def get_tracked_hook_files(repo_root):
     separate repo_hooks field. Same rationale as get_tracked_symlinks:
     every load-bearing file invoked by the plugin manifest must be in
     the integrity registry, even if it lives outside skill_root.
+
+    Walks SUBDIRECTORIES too (added with the Cursor adapter). The original
+    implementation listed hooks/ one level deep and skipped anything that was
+    not a regular file, so per-agent wrapper directories such as hooks/cursor/
+    would have been silently exempt from the integrity registry — the exact gap
+    class this function was written to close, reopened by a directory. Depth is
+    bounded by the hooks tree itself, which holds only wrapper scripts.
     """
     hooks_dir = os.path.join(repo_root, "hooks")
-    try:
-        if not os.path.isdir(hooks_dir):
-            return []
-        entries = sorted(os.listdir(hooks_dir))
-    except OSError:
+    if not os.path.isdir(hooks_dir):
         return []
 
     tracked = []
     skip_files = {'.DS_Store'}
-    for entry in entries:
-        full_path = os.path.join(hooks_dir, entry)
-        if not os.path.isfile(full_path):
-            continue
-        if os.path.islink(full_path):
-            continue
-        if entry in skip_files:
-            continue
-        tracked.append(f"hooks/{entry}")
+    skip_dirs = {'__pycache__', '.pytest_cache', 'node_modules', '.git'}
+
+    for dirpath, dirnames, filenames in os.walk(hooks_dir):
+        # Never follow a symlinked directory out of the hooks tree.
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in skip_dirs and not os.path.islink(os.path.join(dirpath, d))
+        )
+        for entry in sorted(filenames):
+            full_path = os.path.join(dirpath, entry)
+            if not os.path.isfile(full_path):
+                continue
+            if os.path.islink(full_path):
+                continue
+            if entry in skip_files:
+                continue
+            rel = os.path.relpath(full_path, repo_root).replace(os.sep, "/")
+            tracked.append(rel)
     return tracked
 
 
 def get_tracked_runtime_manifest_files(repo_root):
     """Get load-bearing plugin manifest files under agent plugin dirs.
 
-    Claude, Codex, and cross-agent marketplace manifests live outside
+    Claude, Codex, Cursor, and cross-agent marketplace manifests live outside
     skill_root but determine what hooks and skills the agent loads. Extending
     the integrity registry to cover them closes the same gap class as hook
     files (commit 64fbe57).
+
+    `.cursor-plugin` was added with the Cursor adapter (PRD v3 O8). A manifest
+    that is not in this tuple is checksummed by nobody: it escapes both
+    `--verify` and the pinned-key signature check, so a tampered Cursor
+    manifest could re-point the hook commands with nothing to notice.
     """
     tracked = []
-    for dirname in (".claude-plugin", ".codex-plugin"):
+    for dirname in (".claude-plugin", ".codex-plugin", ".cursor-plugin"):
         manifest_dir = os.path.join(repo_root, dirname)
         try:
             if not os.path.isdir(manifest_dir):

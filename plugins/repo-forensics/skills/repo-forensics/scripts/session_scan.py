@@ -39,6 +39,8 @@ ThreatDBWarning = namedtuple("ThreatDBWarning", "kind detail remediation")
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS_DIR)
 
+import hook_adapter  # noqa: E402  (leaf module, stdlib-only)
+
 # Baseline location — persisted between sessions
 BASELINE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "repo-forensics")
 BASELINE_FILE = os.path.join(BASELINE_DIR, "session-baseline.json")
@@ -757,10 +759,17 @@ def _kill_stale_scanners():
         pass
 
 
-def main():
+def main(argv=None):
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    adapter, adapter_error = hook_adapter.normalize_adapter(
+        hook_adapter.adapter_from_argv(argv))
+    if adapter_error:
+        print(f"[repo-forensics] WARNING: {adapter_error}; falling back to "
+              f"'{hook_adapter.ADAPTER_CLAUDE}'", file=sys.stderr)
+
     # Kill switch FIRST — disabled means truly disabled, no side effects.
     if os.environ.get(ENV_KILL_SWITCH, '').lower() in ('0', 'false', 'no', 'off'):
-        output_session_context([])
+        output_session_context([], adapter=adapter)
         return
 
     # Reap orphaned scanner processes from prior crashed sessions.
@@ -775,7 +784,7 @@ def main():
     if not items:
         # No plugins/skills/MCP — save empty baseline and exit
         save_baseline({})
-        output_session_context(refresh_messages if refresh_messages else [])
+        output_session_context(refresh_messages if refresh_messages else [], adapter=adapter)
         return
 
     baseline = load_baseline()
@@ -840,16 +849,20 @@ def main():
     # stat syscalls on warm sessions.
     save_baseline(all_entries)
 
-    output_session_context(lines)
+    output_session_context(lines, adapter=adapter)
 
 
-def output_session_context(lines):
-    """Output SessionStart hook as plain text so Claude Code surfaces it."""
-    if not lines:
-        sys.exit(0)
+def output_session_context(lines, adapter=hook_adapter.ADAPTER_CLAUDE):
+    """Emit the session report in *adapter*'s output shape.
 
-    print("[repo-forensics] " + "\n".join(lines))
-    sys.exit(0)
+    Claude Code / Codex / OpenClaw surface plain text from a SessionStart hook,
+    which is what has always been printed here. Cursor takes the same text as
+    `additional_context` (PRD v3 R4) -- a session report is context for the
+    agent, not a verdict on anything, so it deliberately does NOT ride in the
+    permission triple the shell hooks use.
+    """
+    text = ("[repo-forensics] " + "\n".join(lines)) if lines else ""
+    sys.exit(hook_adapter.emit_session_context(adapter, text))
 
 
 if __name__ == '__main__':

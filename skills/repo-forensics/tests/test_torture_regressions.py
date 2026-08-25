@@ -82,10 +82,21 @@ class TestT5FanoutStarvation:
         with zipfile.ZipFile(tmp_path / "zzz_payload.zip", "w") as z:
             z.writestr("evil.py", "import os\nos.system('id')\n")
         findings = scan_archive.scan_repo(str(tmp_path))
-        # The starved archive must be NAMED in a fail-loud finding, not silently dropped.
+        # The starved archive must be NAMED in a fail-loud finding, not silently
+        # dropped. Which of the two gets starved is NOT asserted: walk_aux does
+        # not sort, so visit order is directory-iteration order and differs by
+        # filesystem -- on ext4 here zzz_payload is visited first and never
+        # starves at all. Naming a specific archive made this test pass or fail
+        # on inode layout. What must hold either way is that the finding points
+        # at the archive that was truncated rather than at the repo root, which
+        # is indistinguishable from a silent skip for anyone acting on it.
         incompletes = [f for f in findings if f.category == "archive-scan-incomplete"]
-        assert any("zzz_payload.zip" in f.file or "zzz_payload.zip" in f.description
-                   for f in incompletes), "starved archive not named (silent skip)"
+        assert incompletes, "budget exhaustion was not reported at all"
+        named = [f for f in incompletes
+                 if ".zip" in f.file or ".zip" in f.description]
+        assert named, (
+            "starved archive not named (silent skip); findings pointed at: "
+            + ", ".join(f.file for f in incompletes))
 
 
 # --- T6: extension-gating bypass --------------------------------------------

@@ -147,8 +147,15 @@ def _candidate(skill_root: Optional[Path] = None) -> tuple[Path, str]:
         if _version_tuple(version):
             return skill_root, version
     repo_root = skill_root.parents[1]
+    # `.cursor-plugin` is in this list for the same reason the other two are: a
+    # bundle that ships only a Cursor manifest and no VERSION file would other-
+    # wise fall through to the RuntimeError below, and monotonic version
+    # promotion -- the thing that stops an older agent install from downgrading
+    # the scheduler a newer one selected -- would fail closed on a platform that
+    # is otherwise fully supported (PRD v3 O2).
     for manifest in (repo_root / ".claude-plugin" / "plugin.json",
-                     repo_root / ".codex-plugin" / "plugin.json"):
+                     repo_root / ".codex-plugin" / "plugin.json",
+                     repo_root / ".cursor-plugin" / "plugin.json"):
         data = _load_json(manifest)
         version = data.get("version")
         if isinstance(version, str) and _version_tuple(version):

@@ -159,6 +159,7 @@ class TestLoadEcosystemRoots:
             "codex",
             "openclaw",
             "nanoclaw",
+            "cursor",
         }
 
     def test_schema_version_mismatch_raises(self, tmp_path):
@@ -224,7 +225,7 @@ class TestDetectEcosystems:
         # Isolate HOME so ~ expansion points at the clean dir
         env = {"HOME": str(fake_home)}
         results = detect_ecosystems(config, env=env)
-        assert len(results) == 4
+        assert len(results) == 5
         for eco in results:
             assert eco["detected"] is False
             assert eco["matched_signals"] == []
@@ -362,7 +363,7 @@ class TestBuildInventoryShape:
         inv = build_inventory_fn(env={"HOME": str(fake_home)})
         # Order must match config declaration order for stable JSON diffs
         keys = [e["key"] for e in inv["ecosystems"]]
-        assert keys == ["claude_code", "codex", "openclaw", "nanoclaw"]
+        assert keys == ["claude_code", "codex", "openclaw", "nanoclaw", "cursor"]
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +380,7 @@ class TestRealFilesystemSmoke:
         inv = build_inventory_fn()
         assert inv["schema_version"] == 1
         assert isinstance(inv["ecosystems"], list)
-        assert len(inv["ecosystems"]) == 4
+        assert len(inv["ecosystems"]) == 5
 
     def test_json_serializable(self):
         """Every field in the inventory must be JSON-serializable."""

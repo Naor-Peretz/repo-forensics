@@ -17,7 +17,8 @@
       "used_by": [
         "claude_code",
         "codex",
-        "openclaw"
+        "openclaw",
+        "cursor"
       ],
       "purpose": "agent_instructions",
       "report_under": "memory"
@@ -38,7 +39,20 @@
       ],
       "severity": "high",
       "reference": "https://github.com/openclaw/openclaw/issues/54506",
-      "detection_logic": "If ~/.codex/auth.json exists AND ~/.openclaw/ has an active install\n(openclaw.json present OR ~/.agents/skills/ populated), emit a finding\nwith severity=high pointing to the upstream bug. Does not read token\nvalues \u2014 the presence of both installs is sufficient signal for the\nknown exploit vector.\n"
+      "detection_logic": "If ~/.codex/auth.json exists AND ~/.openclaw/ has an active install\n(openclaw.json present OR ~/.agents/skills/ populated), emit a finding\nwith severity=high pointing to the upstream bug. Does not read token\nvalues — the presence of both installs is sufficient signal for the\nknown exploit vector.\n"
+    },
+    {
+      "id": "cursor/unowned-blocking-hook",
+      "title": "Unrecognised beforeShellExecution hook in Cursor",
+      "affected_file": "~/.cursor/hooks.json",
+      "trigger_conditions": [
+        {
+          "cursor_installed": true
+        }
+      ],
+      "severity": "high",
+      "reference": "https://cursor.com/docs/agent/hooks",
+      "detection_logic": "If ~/.cursor/hooks.json declares a beforeShellExecution entry whose\ncommand is not recognised (not repo-forensics-managed and not a path\nunder a known tool root), report it. That hook executes ahead of every\nshell command the agent runs, with the user's full environment, and it\ncan rewrite or approve the command. Reports the command string and file\nmetadata only; never executes it.\n"
     }
   ],
   "ecosystems": {
@@ -502,6 +516,104 @@
           "${root}/build/",
           "${root}/.next/"
         ]
+      }
+    },
+    "cursor": {
+      "display_name": "Cursor",
+      "vendor": "Anysphere",
+      "docs_url": "https://cursor.com/docs/agent/hooks",
+      "detection": {
+        "kind": "dotfolder",
+        "env_overrides": [
+          {
+            "name": "CURSOR_HOME",
+            "default": "~/.cursor"
+          }
+        ],
+        "roots": [
+          "${CURSOR_HOME}"
+        ],
+        "required_signals_any": [
+          "${CURSOR_HOME}/hooks.json",
+          "${CURSOR_HOME}/mcp.json",
+          "${CURSOR_HOME}/rules",
+          "${CURSOR_HOME}/extensions"
+        ]
+      },
+      "surfaces": {
+        "skills": {
+          "globs": [
+            "${CURSOR_HOME}/skills/*/SKILL.md"
+          ]
+        },
+        "commands": {
+          "globs": [
+            "${CURSOR_HOME}/commands/**/*.md"
+          ]
+        },
+        "rules": {
+          "globs": [
+            "${CURSOR_HOME}/rules/**/*.mdc",
+            "${CURSOR_HOME}/rules/**/*.md"
+          ],
+          "note": "Cursor rules are agent-instruction files: a directive here is executed, not documentation. scan_skill_threats treats .cursorrules the same way."
+        },
+        "hooks": {
+          "files": [
+            "${CURSOR_HOME}/hooks.json"
+          ],
+          "parse_as": "json",
+          "extract_keys": [
+            "version",
+            "hooks.*"
+          ],
+          "note": "beforeShellExecution entries run before every shell command the agent issues, so an unrecognised entry here is an arbitrary-code-execution surface, not a preference."
+        },
+        "mcp": {
+          "files": [
+            "${CURSOR_HOME}/mcp.json"
+          ],
+          "parse_as": "json",
+          "extract_keys": [
+            "mcpServers.*"
+          ]
+        },
+        "plugins": {
+          "globs": [
+            "${CURSOR_HOME}/extensions/**/package.json",
+            "${CURSOR_HOME}/plugins/**/.cursor-plugin/plugin.json"
+          ]
+        },
+        "commands_and_memory": {
+          "memory_files": [
+            "${CURSOR_HOME}/AGENTS.md",
+            "${CURSOR_HOME}/rules/**/*.mdc"
+          ],
+          "brain_files": [
+            "${CURSOR_HOME}/AGENTS.md"
+          ]
+        },
+        "settings": {
+          "files": [
+            "${CURSOR_HOME}/settings.json",
+            "${CURSOR_HOME}/cli-config.json"
+          ]
+        },
+        "credentials": {
+          "files": [
+            "${CURSOR_HOME}/auth.json",
+            "${CURSOR_HOME}/.env"
+          ],
+          "schema_inspection": "shape_only",
+          "metadata_fields": [
+            "file_mode_octal",
+            "is_world_readable",
+            "is_group_readable",
+            "owner_uid_matches_current",
+            "size_bytes",
+            "last_modified_iso"
+          ]
+        }
       }
     }
   }
