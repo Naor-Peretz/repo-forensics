@@ -116,7 +116,12 @@ class TestMergeSafety:
         cursor_install.install(root=plugin_root)
         command = [e["command"] for e in _read(cursor_home)["hooks"]["beforeShellExecution"]
                    if cursor_install.OWNERSHIP_MARKER in e["command"]][0]
-        assert f'CLAUDE_PLUGIN_ROOT="{plugin_root}"' in command
+        # Compare against the ESCAPED root, not the raw one. _dq() escapes
+        # backslashes, so on Windows a real path (C:\Users\...) is legitimately
+        # rewritten as C:\\Users\\... inside the double-quoted command. The
+        # invariant is "the absolute root is baked in", not "the string survives
+        # byte-for-byte".
+        assert f'CLAUDE_PLUGIN_ROOT="{cursor_install._dq(plugin_root)}"' in command
         assert os.path.isabs(plugin_root)
 
     def test_reinstall_replaces_instead_of_stacking(self, cursor_home, plugin_root):
@@ -309,8 +314,16 @@ class TestShellEscaping:
         on every hook event, so a repo at a hostile path must not become
         command injection."""
         command = cursor_install._managed_hooks(hostile)["beforeShellExecution"][0]["command"]
-        escaped = cursor_install._dq(hostile)
-        assert escaped in command
+
+        # What must hold is the SECURITY property, not string identity. The
+        # installer routes the root through pathlib, and on Windows Path()
+        # normalises '/' to '\\' -- so the hostile string does not survive
+        # verbatim there, while remaining just as escaped. Asserting the literal
+        # input reappears tests pathlib's normalisation, not our escaping.
         for dangerous in ('";', "$(", "`", "\n"):
             assert dangerous not in command.replace('\\' + dangerous[0], ""), \
                 f"unescaped {dangerous!r} survived into the hook command"
+
+        # And the command must still be one well-formed shell token per field:
+        # an unbalanced quote is exactly how an injected root breaks out.
+        assert command.count('"') % 2 == 0, f"unbalanced quoting: {command!r}"
