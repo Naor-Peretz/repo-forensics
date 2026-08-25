@@ -1,5 +1,7 @@
 import os
 import subprocess
+
+from shell_compat import bash_c, sh_argv
 import sys
 from pathlib import Path
 
@@ -36,7 +38,7 @@ def _run_codex_finder(env: dict) -> subprocess.CompletedProcess:
         'printf "OUT=%s\\nRC=%s\\n" "$out" "$rc"\n'
     )
     return subprocess.run(
-        ["/bin/bash", "-c", script],
+        bash_c(script),
         text=True, capture_output=True, env=env, timeout=20, check=False,
     )
 
@@ -128,7 +130,7 @@ def test_cli_skips_broken_windows_python_alias(tmp_path):
         "PATH": f"{fake_bin}:/usr/bin:/bin",
     }
     result = subprocess.run(
-        ["/bin/bash", str(RUN_FORENSICS), "--inventory", "--list-ecosystems"],
+        sh_argv(RUN_FORENSICS, "--inventory", "--list-ecosystems"),
         text=True,
         capture_output=True,
         env=env,
@@ -158,7 +160,7 @@ def test_cli_skips_zero_byte_python_stub(tmp_path):
 
     env = {**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"}
     result = subprocess.run(
-        ["/bin/bash", str(RUN_FORENSICS), "--inventory", "--list-ecosystems"],
+        sh_argv(RUN_FORENSICS, "--inventory", "--list-ecosystems"),
         text=True, capture_output=True, env=env, timeout=20, check=False,
     )
 
@@ -184,7 +186,7 @@ def test_cli_skips_non_python_exit0_pretender(tmp_path):
 
     env = {**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"}
     result = subprocess.run(
-        ["/bin/bash", str(RUN_FORENSICS), "--inventory", "--list-ecosystems"],
+        sh_argv(RUN_FORENSICS, "--inventory", "--list-ecosystems"),
         text=True, capture_output=True, env=env, timeout=20, check=False,
     )
 
@@ -212,7 +214,7 @@ def test_cli_bypasses_hanging_python_stub(tmp_path):
     # 20s is generous: the resolver's internal timeout (5s) must kick in
     # well before this outer subprocess timeout fires.
     result = subprocess.run(
-        ["/bin/bash", str(RUN_FORENSICS), "--inventory", "--list-ecosystems"],
+        sh_argv(RUN_FORENSICS, "--inventory", "--list-ecosystems"),
         text=True, capture_output=True, env=env, timeout=20, check=False,
     )
 
@@ -241,7 +243,7 @@ def test_cli_falls_back_to_py_launcher(tmp_path):
 
     env = {**os.environ, "PATH": f"{fake_bin}:/usr/bin:/bin"}
     result = subprocess.run(
-        ["/bin/bash", str(RUN_FORENSICS), "--inventory", "--list-ecosystems"],
+        sh_argv(RUN_FORENSICS, "--inventory", "--list-ecosystems"),
         text=True, capture_output=True, env=env, timeout=20, check=False,
     )
 

@@ -21,6 +21,8 @@ import json
 import os
 import subprocess
 
+from shell_compat import sh_argv
+
 
 
 REQUIRED_TOP_LEVEL_KEYS = {
@@ -108,7 +110,10 @@ def _script_path():
 
 def _run_forensics(target_path, extra_args=None):
     """Run run_forensics.sh against target in JSON mode and return (returncode, payload)."""
-    args = [_script_path(), str(target_path), "--format", "json"]
+    # Through bash, not exec'd directly: Windows cannot run a .sh as a program
+    # (OSError [WinError 193]), which is what made all of this file's tests fail
+    # the first time the suite ran on windows-latest.
+    args = sh_argv(_script_path(), str(target_path), "--format", "json")
     if extra_args:
         args.extend(extra_args)
     result = subprocess.run(args, capture_output=True, text=True, check=False)
