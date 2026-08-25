@@ -625,6 +625,28 @@ class TestMainIntegration:
 # Latency benchmarks
 # ========================================================================
 
+def _median_ms(fn, warmup=1, samples=5):
+    """Median wall-clock of *fn* in ms, after discarding warmup runs.
+
+    A single timing sample on a shared CI runner is a coin flip: the
+    windows-latest job failed `< 300ms` at 453ms while ubuntu and macOS passed
+    the same commit, which says more about a noisy neighbour than about this
+    code. The median over a handful of runs still catches a real regression --
+    those move the whole distribution, not one sample -- without teaching
+    people that a red build means "just re-run it".
+    """
+    import statistics
+    for _ in range(warmup):
+        fn()
+    return statistics.median([_time_once(fn) for _ in range(samples)])
+
+
+def _time_once(fn):
+    start = time.monotonic()
+    fn()
+    return (time.monotonic() - start) * 1000
+
+
 class TestLatency:
     """Real latency measurements — these verify our performance claims."""
 
@@ -633,11 +655,12 @@ class TestLatency:
         monkeypatch.setattr(session_scan, 'refresh_threat_databases', lambda: [])
         monkeypatch.delenv("REPO_FORENSICS_SESSION_SCAN", raising=False)
 
-        start = time.monotonic()
-        with pytest.raises(SystemExit):
-            session_scan.main()
-        elapsed_ms = (time.monotonic() - start) * 1000
-        assert elapsed_ms < 300, f"Fast path took {elapsed_ms:.0f}ms (expected <300ms)"
+        def _run():
+            with pytest.raises(SystemExit):
+                session_scan.main()
+
+        elapsed_ms = _median_ms(_run)
+        assert elapsed_ms < 300, f"Fast path median {elapsed_ms:.0f}ms (expected <300ms)"
 
     def test_baseline_match_no_changes(self, mock_home, monkeypatch):
         """5 plugins, nothing changed, caches fresh = should be <100ms."""
