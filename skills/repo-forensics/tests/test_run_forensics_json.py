@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 
+from shell_compat import sh_argv
+
 
 def test_run_forensics_json_mode_returns_valid_json(tmp_path):
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,7 +19,7 @@ def test_run_forensics_json_mode_returns_valid_json(tmp_path):
     )
 
     result = subprocess.run(
-        [script_path, str(tmp_path), "--skill-scan", "--format", "json"],
+        sh_argv(script_path, str(tmp_path), "--skill-scan", "--format", "json"),
         capture_output=True,
         text=True,
         check=False,

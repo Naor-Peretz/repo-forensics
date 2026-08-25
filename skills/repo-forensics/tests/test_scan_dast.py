@@ -7,6 +7,11 @@ import pytest
 import scan_dast as scanner
 
 
+_NEEDS_POSIX_HOOKS = pytest.mark.skipif(
+    os.name == "nt",
+    reason="hook discovery and DAST execution rely on the POSIX executable bit and on running .sh directly; Windows has neither")
+
+
 class TestHookDiscovery:
     def test_finds_registered_hooks(self, repo_with_hook_scripts):
         hooks = scanner.find_hook_scripts(str(repo_with_hook_scripts))
@@ -14,6 +19,7 @@ class TestHookDiscovery:
         events = [h['event'] for h in hooks]
         assert 'PreToolUse' in events
 
+    @_NEEDS_POSIX_HOOKS
     def test_finds_standalone_scripts(self, repo_with_hook_scripts):
         hooks = scanner.find_hook_scripts(str(repo_with_hook_scripts))
         standalone = [h for h in hooks if h['event'] == 'standalone']
@@ -39,6 +45,7 @@ class TestSafeEnv:
 
 
 class TestPayloadExecution:
+    @_NEEDS_POSIX_HOOKS
     def test_detects_env_leak(self, repo_with_hook_scripts):
         hooks = scanner.find_hook_scripts(str(repo_with_hook_scripts))
         # Find the leaky hook

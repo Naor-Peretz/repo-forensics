@@ -451,7 +451,7 @@ class TestJsonParseability:
         Torture-room language-reviewer Finding 2.
         """
         result = subprocess.run(
-            [_script_path(), str(clean_repo), "--format", "json"],
+            sh_argv(_script_path(), str(clean_repo), "--format", "json"),
             capture_output=True,
             text=True,
             check=False,

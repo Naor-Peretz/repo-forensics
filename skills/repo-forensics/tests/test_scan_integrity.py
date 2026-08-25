@@ -53,7 +53,13 @@ class TestHooksDetection:
         assert len(hook_findings) == 2  # PreToolUse + PostToolUse
 
 
+_NO_POSIX_EXEC_BIT = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs the POSIX executable bit; Windows derives X_OK from the file extension, so chmod(0o755) is a no-op and the finding cannot fire")
+
+
 class TestExecutableConfigs:
+    @_NO_POSIX_EXEC_BIT
     def test_flags_executable_json(self, repo_with_hooks):
         settings_path = repo_with_hooks / ".claude" / "settings.json"
         settings_path.chmod(0o755)
